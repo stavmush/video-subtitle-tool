@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Streamlit
+.streamlit/
+
+# HuggingFace model cache (large, re-downloads automatically)
+# Uncomment to exclude the cache from git (it lives in ~/.cache/huggingface by default anyway)
+# .cache/
+
+# Temp files created by the app
+subtitle_tool_*/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/

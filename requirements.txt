@@ -1,0 +1,9 @@
+streamlit>=1.32.0
+openai-whisper>=20231117
+transformers>=4.38.0
+torch>=2.1.0
+sentencepiece>=0.1.99
+sacremoses>=0.1.1
+ffmpeg-python>=0.2.0
+srt>=3.5.3
+pandas>=2.0.0
