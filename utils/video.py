@@ -1,17 +1,63 @@
 """
-FFmpeg subtitle burning utilities.
+FFmpeg subtitle utilities: embed (soft) or burn (hard) subtitles into MP4.
 
-Uses ffmpeg-python to burn SRT subtitles into a video file as hard subtitles
-(permanently embedded, visible in any player without subtitle track support).
+Soft embedding  (always available):
+  Adds the subtitle track to the MP4 container. The subtitles are selectable
+  in any player (VLC, IINA, QuickTime). Fast — no video re-encoding needed.
 
-Hebrew / RTL text: libass handles Unicode BiDi automatically when the SRT file
-contains Hebrew characters. The only requirement is a font with Hebrew glyph
-coverage — provide its path via font_path.
+Hard burning    (requires FFmpeg compiled with --enable-libass):
+  Renders subtitle text permanently onto each video frame. Visible in any
+  player even without subtitle support. Requires libass.
+  Install: brew tap homebrew-ffmpeg/ffmpeg &&
+           brew install homebrew-ffmpeg/ffmpeg/ffmpeg --with-libass
 """
 
 import ffmpeg
 import os
 import shutil
+import subprocess
+
+
+def _has_libass() -> bool:
+    """Return True if the system ffmpeg was compiled with libass."""
+    try:
+        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True)
+        return "--enable-libass" in result.stdout
+    except FileNotFoundError:
+        return False
+
+
+def embed_subtitles(
+    input_video: str,
+    srt_path: str,
+    output_path: str,
+) -> None:
+    """
+    Embed SRT subtitles as a soft track inside the MP4 container (mov_text codec).
+
+    Fast — video and audio are stream-copied (no re-encoding).
+    The subtitle track is selectable in VLC, IINA, QuickTime, etc.
+
+    Raises:
+        RuntimeError: if FFmpeg fails
+    """
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg not found. Install: brew install ffmpeg")
+
+    try:
+        (
+            ffmpeg
+            .output(
+                ffmpeg.input(input_video),
+                ffmpeg.input(srt_path),
+                output_path,
+                **{"c:v": "copy", "c:a": "copy", "c:s": "mov_text"},
+            )
+            .overwrite_output()
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+    except ffmpeg.Error as e:
+        raise RuntimeError(f"FFmpeg failed:\n{e.stderr.decode('utf-8', errors='replace')}")
 
 
 def burn_subtitles(
@@ -23,88 +69,62 @@ def burn_subtitles(
     font_size: int = 24,
 ) -> None:
     """
-    Burn SRT subtitles into a video file.
-
-    Args:
-        input_video:  absolute path to the source MP4
-        srt_path:     absolute path to the UTF-8 encoded .srt file
-        output_path:  absolute path for the output MP4
-        font_path:    path to a .ttf/.otf font file; required for correct Hebrew rendering
-        is_rtl:       whether the subtitles are RTL (used for alignment hint)
-        font_size:    subtitle font size in points
+    Burn subtitles permanently into video frames (hard subtitles).
+    Requires FFmpeg compiled with --enable-libass.
 
     Raises:
-        RuntimeError:      if FFmpeg is not installed or exits with a non-zero code
-        FileNotFoundError: if font_path is provided but the file does not exist
+        RuntimeError:      if FFmpeg lacks libass or fails
+        FileNotFoundError: if font_path is provided but doesn't exist
     """
     if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg not found. Install: brew install ffmpeg")
+
+    if not _has_libass():
         raise RuntimeError(
-            "ffmpeg not found in PATH.\n"
-            "Install it with: brew install ffmpeg (macOS) or apt install ffmpeg (Linux)"
+            "Hard subtitle burning requires FFmpeg with libass support.\n"
+            "Your current FFmpeg build does not include libass.\n\n"
+            "To enable it:\n"
+            "  brew tap homebrew-ffmpeg/ffmpeg\n"
+            "  brew install homebrew-ffmpeg/ffmpeg/ffmpeg --with-libass\n\n"
+            "For now, use 'Embed subtitles' instead — it works with any player (VLC, IINA, etc)."
         )
 
     if font_path and not os.path.isfile(font_path):
         raise FileNotFoundError(f"Font file not found: {font_path}")
 
-    vf_filter = _build_subtitles_filter(srt_path, font_path, font_size)
+    # Copy font with a simple name — variable font filenames like
+    # NotoSansHebrew[wdth,wght].ttf contain [ ] which break FFmpeg's filtergraph parser
+    simple_font = None
+    if font_path:
+        ext = os.path.splitext(font_path)[1]
+        simple_font = os.path.join(os.path.dirname(srt_path), f"subtitle_font{ext}")
+        shutil.copy2(font_path, simple_font)
+
+    force_style = ",".join([
+        f"FontSize={font_size}",
+        "PrimaryColour=&H00FFFFFF&",
+        "OutlineColour=&H00000000&",
+        "Outline=2", "Shadow=0", "MarginV=30", "Alignment=2", "Bold=0",
+    ])
+
+    def esc(p: str) -> str:
+        return p.replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+
+    parts = [f"subtitles='{esc(srt_path)}'", f"force_style='{force_style}'"]
+    if simple_font:
+        parts.append(f"fontsdir='{esc(os.path.dirname(simple_font))}'")
+    vf = ":".join(parts)
 
     try:
         (
             ffmpeg
             .input(input_video)
-            .output(
-                output_path,
-                vf=vf_filter,
-                acodec="copy",
-                vcodec="libx264",
-                crf=18,
-                preset="fast",
-            )
+            .output(output_path, vf=vf, acodec="copy", vcodec="libx264", crf=18, preset="fast")
             .overwrite_output()
             .run(capture_stdout=True, capture_stderr=True)
         )
     except ffmpeg.Error as e:
-        stderr = e.stderr.decode("utf-8", errors="replace")
-        raise RuntimeError(f"FFmpeg failed:\n{stderr}")
-
-
-def _build_force_style(font_path: str | None, font_size: int) -> str:
-    """Build the ASS force_style string for the FFmpeg subtitles filter."""
-    parts = [
-        f"FontSize={font_size}",
-        "PrimaryColour=&H00FFFFFF&",   # white text  (ASS format: &H00BBGGRR&)
-        "OutlineColour=&H00000000&",   # black outline
-        "Outline=2",
-        "Shadow=0",
-        "MarginV=30",
-        "Alignment=2",                 # centered, bottom
-        "Bold=0",
-    ]
-    if font_path:
-        font_name = os.path.splitext(os.path.basename(font_path))[0]
-        parts.append(f"FontName={font_name}")
-    return ",".join(parts)
-
-
-def _escape_filter_path(path: str) -> str:
-    """Escape a file path for use inside an FFmpeg filtergraph string."""
-    return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-
-
-def _build_subtitles_filter(srt_path: str, font_path: str | None, font_size: int) -> str:
-    """
-    Build the vf subtitles filter string.
-
-    For Hebrew fonts, fontsdir points libass at the directory containing the
-    font file; force_style/FontName selects it by name.
-    """
-    escaped_path = _escape_filter_path(srt_path)
-    force_style = _build_force_style(font_path, font_size)
-
-    parts = [f"subtitles='{escaped_path}'", f"force_style='{force_style}'"]
-
-    if font_path:
-        fonts_dir = _escape_filter_path(os.path.dirname(font_path))
-        parts.append(f"fontsdir='{fonts_dir}'")
-
-    return ":".join(parts)
+        raise RuntimeError(f"FFmpeg failed:\n{e.stderr.decode('utf-8', errors='replace')}")
+    finally:
+        if simple_font and os.path.exists(simple_font):
+            os.remove(simple_font)

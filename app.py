@@ -19,7 +19,7 @@ import streamlit as st
 from utils.srt_utils import dataframe_to_srt, segments_to_dataframe
 from utils.transcribe import transcribe_to_english, transcribe_video
 from utils.translate import translate_segments
-from utils.video import burn_subtitles
+from utils.video import burn_subtitles, embed_subtitles
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Video Subtitle Tool", layout="wide")
@@ -50,15 +50,28 @@ def _cleanup_temp(tmp_dir: str | None) -> None:
 with st.sidebar:
     st.title("Settings")
 
+    # Memory figures are for faster-whisper with int8 quantization (~4x less than openai-whisper)
+    MODEL_INFO = {
+        "tiny":        "~40 MB  · fastest · low accuracy",
+        "base":        "~75 MB  · fast    · decent accuracy",
+        "small":       "~240 MB · good balance (recommended)",
+        "medium":      "~770 MB · high accuracy · fine on 8 GB RAM",
+        "large-v2":    "~1.5 GB · best accuracy · needs 4 GB+ free RAM",
+        "large-v3":    "~1.5 GB · latest model  · needs 4 GB+ free RAM",
+    }
+
     whisper_model_size = st.selectbox(
         "Whisper model size",
-        ["tiny", "base", "small", "medium", "large"],
+        list(MODEL_INFO.keys()),
         index=2,
-        help=(
-            "tiny/base are fast but less accurate. "
-            "small is a good balance. medium/large are slow but most accurate."
-        ),
+        format_func=lambda m: f"{m}  —  {MODEL_INFO[m]}",
     )
+
+    if whisper_model_size in ("large-v2", "large-v3"):
+        st.warning(
+            "The **large** model needs ~1.5 GB free RAM. "
+            "Close other apps before running if you have 8 GB total."
+        )
 
     target_language = st.radio(
         "Subtitle language",
@@ -110,21 +123,46 @@ if st.session_state["uploaded_video_path"]:
 
     if not st.session_state["transcription_done"]:
         if st.button("Transcribe", type="primary"):
-            with st.spinner(
-                f"Running Whisper ({whisper_model_size}) — this may take a few minutes..."
-            ):
-                try:
-                    segments, detected_lang = transcribe_video(
-                        video_path=st.session_state["uploaded_video_path"],
-                        model_size=whisper_model_size,
-                    )
-                    st.session_state["whisper_segments"] = segments
-                    st.session_state["source_language"] = detected_lang
-                    st.session_state["transcription_done"] = True
-                    st.session_state["subtitles_df"] = segments_to_dataframe(segments)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Transcription failed: {e}")
+            status_text = st.empty()
+            progress_bar = st.progress(0)
+
+            is_first_load = not any(
+                True for _ in []  # placeholder; model cache checked below
+            )
+            status_text.info(
+                f"Loading Whisper **{whisper_model_size}** model into memory "
+                f"(first load may take a minute for larger models)..."
+            )
+
+            def on_transcribe_progress(fraction: float):
+                progress_bar.progress(fraction)
+                status_text.caption(f"Transcribing audio... {int(fraction * 100)}%")
+
+            try:
+                segments, detected_lang = transcribe_video(
+                    video_path=st.session_state["uploaded_video_path"],
+                    model_size=whisper_model_size,
+                    on_progress=on_transcribe_progress,
+                )
+                progress_bar.progress(1.0)
+                status_text.empty()
+                progress_bar.empty()
+                st.session_state["whisper_segments"] = segments
+                st.session_state["source_language"] = detected_lang
+                st.session_state["transcription_done"] = True
+                st.session_state["subtitles_df"] = segments_to_dataframe(segments)
+                st.rerun()
+            except MemoryError:
+                progress_bar.empty()
+                status_text.empty()
+                st.error(
+                    f"Out of memory loading the **{whisper_model_size}** model. "
+                    "Try a smaller model size (medium or small) in the sidebar."
+                )
+            except Exception as e:
+                progress_bar.empty()
+                status_text.empty()
+                st.error(f"Transcription failed: {e}")
     else:
         src = st.session_state["source_language"]
         st.success(f"Transcription complete. Detected language: **{src}**")
@@ -150,11 +188,22 @@ if st.session_state["transcription_done"]:
             try:
                 if tgt == "he" and src != "en":
                     # Stage 1: Whisper translate to English
-                    with st.spinner("Stage 1/2: Using Whisper to produce English text..."):
-                        english_segs = transcribe_to_english(
-                            video_path=st.session_state["uploaded_video_path"],
-                            model_size=whisper_model_size,
-                        )
+                    t_status = st.empty()
+                    t_bar = st.progress(0)
+                    t_status.caption("Stage 1/2: Translating to English with Whisper...")
+
+                    def on_translate_progress(f):
+                        t_bar.progress(f)
+                        t_status.caption(f"Stage 1/2: Translating to English... {int(f*100)}%")
+
+                    english_segs = transcribe_to_english(
+                        video_path=st.session_state["uploaded_video_path"],
+                        model_size=whisper_model_size,
+                        on_progress=on_translate_progress,
+                    )
+                    t_bar.empty()
+                    t_status.empty()
+
                     # Stage 2: English → Hebrew with MarianMT
                     with st.spinner(
                         "Stage 2/2: Translating English → Hebrew (downloading model on first run)..."
@@ -168,11 +217,21 @@ if st.session_state["transcription_done"]:
 
                 elif tgt == "en" and src != "en":
                     # Whisper's built-in translate task
-                    with st.spinner("Translating to English using Whisper..."):
-                        translated = transcribe_to_english(
-                            video_path=st.session_state["uploaded_video_path"],
-                            model_size=whisper_model_size,
-                        )
+                    t_status = st.empty()
+                    t_bar = st.progress(0)
+                    t_status.caption("Translating to English with Whisper...")
+
+                    def on_translate_progress(f):
+                        t_bar.progress(f)
+                        t_status.caption(f"Translating to English... {int(f*100)}%")
+
+                    translated = transcribe_to_english(
+                        video_path=st.session_state["uploaded_video_path"],
+                        model_size=whisper_model_size,
+                        on_progress=on_translate_progress,
+                    )
+                    t_bar.empty()
+                    t_status.empty()
 
                 else:
                     # src == "en", tgt == "he"
@@ -201,6 +260,12 @@ if st.session_state["transcription_done"]:
 # ═══════════════════════════════════════════════════════════════════════════════
 if st.session_state["translation_done"]:
     st.header("4. Edit Subtitles")
+    st.info(
+        "**Click any cell to edit it.** "
+        "You can change the subtitle text, adjust start/end timestamps (format: HH:MM:SS,mmm), "
+        "or use the row controls on the left to delete a row. "
+        "Use the **Renumber** button if you delete rows to keep numbering clean."
+    )
 
     # RTL CSS injection for Hebrew
     if target_language == "he":
@@ -294,62 +359,111 @@ if st.session_state["translation_done"]:
         else:
             st.warning("Fix timestamp errors above before downloading.")
 
-    # ── 5b: Burn subtitles into video ─────────────────────────────────────────
+    # ── 5b: Embed / Burn subtitles into video ────────────────────────────────
     with col2:
-        st.subheader("Burn subtitles into video")
-        st.caption("Creates a new MP4 with subtitles permanently embedded.")
+        st.subheader("Add subtitles to video")
 
-        if target_language == "he":
-            font_path = st.text_input(
-                "Hebrew font path (TTF/OTF with Hebrew glyphs)",
-                value="",
-                placeholder="/path/to/NotoSansHebrew-Regular.ttf",
-                help=(
-                    "Required for correct Hebrew rendering. "
-                    "Install Noto Hebrew: brew install font-noto-sans-hebrew (macOS)"
-                ),
+        embed_tab, burn_tab = st.tabs(["Embed (Recommended)", "Burn (Hard subs)"])
+
+        # ── Embed (soft track) ────────────────────────────────────────────────
+        with embed_tab:
+            st.caption(
+                "Adds a subtitle track inside the MP4 container — **no re-encoding**. "
+                "Selectable in VLC, IINA, QuickTime, and most players. Fast."
             )
-        else:
-            font_path = None
+            if st.button("Embed subtitles", type="primary", use_container_width=True):
+                if not st.session_state["srt_content"]:
+                    st.error("Fix subtitle errors before embedding.")
+                else:
+                    tmp_dir = st.session_state["temp_dir"]
+                    srt_path = os.path.join(tmp_dir, "subtitles.srt")
+                    output_path = os.path.join(tmp_dir, "output_embedded.mp4")
 
-        font_size = st.slider("Font size", min_value=14, max_value=48, value=24, step=2)
+                    with open(srt_path, "w", encoding="utf-8") as f:
+                        f.write(st.session_state["srt_content"])
 
-        if st.button("Burn subtitles", type="primary", use_container_width=True):
-            if not st.session_state["srt_content"]:
-                st.error("Fix subtitle errors before burning.")
-            elif target_language == "he" and not font_path:
-                st.error("Please provide a Hebrew font path for correct rendering.")
+                    with st.spinner("Embedding subtitles with FFmpeg..."):
+                        try:
+                            embed_subtitles(
+                                input_video=st.session_state["uploaded_video_path"],
+                                srt_path=srt_path,
+                                output_path=output_path,
+                            )
+
+                            def _video_stream_embed(path: str):
+                                with open(path, "rb") as vf:
+                                    while chunk := vf.read(1024 * 1024):
+                                        yield chunk
+
+                            st.success("Done! Click below to download.")
+                            st.download_button(
+                                label="Download video with embedded subtitles",
+                                data=_video_stream_embed(output_path),
+                                file_name="video_with_subtitles.mp4",
+                                mime="video/mp4",
+                                use_container_width=True,
+                            )
+                        except (RuntimeError, FileNotFoundError) as e:
+                            st.error(str(e))
+
+        # ── Burn (hard subs, requires libass) ─────────────────────────────────
+        with burn_tab:
+            st.caption(
+                "Renders subtitles permanently onto each video frame. "
+                "Visible in **any** player, even without subtitle support. "
+                "Requires FFmpeg compiled with libass."
+            )
+
+            if target_language == "he":
+                font_path = st.text_input(
+                    "Hebrew font path (TTF/OTF with Hebrew glyphs)",
+                    value="/Users/stav/Library/Fonts/NotoSansHebrew[wdth,wght].ttf",
+                    help=(
+                        "Required for correct Hebrew rendering. "
+                        "Font installed at: /Users/stav/Library/Fonts/NotoSansHebrew[wdth,wght].ttf"
+                    ),
+                )
             else:
-                tmp_dir = st.session_state["temp_dir"]
-                srt_path = os.path.join(tmp_dir, "subtitles.srt")
-                output_path = os.path.join(tmp_dir, "output_with_subs.mp4")
+                font_path = None
 
-                with open(srt_path, "w", encoding="utf-8") as f:
-                    f.write(st.session_state["srt_content"])
+            font_size = st.slider("Font size", min_value=14, max_value=48, value=24, step=2)
 
-                with st.spinner("Burning subtitles with FFmpeg..."):
-                    try:
-                        burn_subtitles(
-                            input_video=st.session_state["uploaded_video_path"],
-                            srt_path=srt_path,
-                            output_path=output_path,
-                            font_path=font_path or None,
-                            is_rtl=(target_language == "he"),
-                            font_size=font_size,
-                        )
-                        # Stream in chunks to avoid loading entire file into memory
-                        def _video_stream(path: str):
-                            with open(path, "rb") as vf:
-                                while chunk := vf.read(1024 * 1024):
-                                    yield chunk
+            if st.button("Burn subtitles", type="primary", use_container_width=True):
+                if not st.session_state["srt_content"]:
+                    st.error("Fix subtitle errors before burning.")
+                elif target_language == "he" and not font_path:
+                    st.error("Please provide a Hebrew font path for correct rendering.")
+                else:
+                    tmp_dir = st.session_state["temp_dir"]
+                    srt_path = os.path.join(tmp_dir, "subtitles.srt")
+                    output_path = os.path.join(tmp_dir, "output_burned.mp4")
 
-                        st.success("Done! Click below to download.")
-                        st.download_button(
-                            label="Download burned video",
-                            data=_video_stream(output_path),
-                            file_name="video_with_subtitles.mp4",
-                            mime="video/mp4",
-                            use_container_width=True,
-                        )
-                    except (RuntimeError, FileNotFoundError) as e:
-                        st.error(str(e))
+                    with open(srt_path, "w", encoding="utf-8") as f:
+                        f.write(st.session_state["srt_content"])
+
+                    with st.spinner("Burning subtitles with FFmpeg..."):
+                        try:
+                            burn_subtitles(
+                                input_video=st.session_state["uploaded_video_path"],
+                                srt_path=srt_path,
+                                output_path=output_path,
+                                font_path=font_path or None,
+                                is_rtl=(target_language == "he"),
+                                font_size=font_size,
+                            )
+
+                            def _video_stream_burn(path: str):
+                                with open(path, "rb") as vf:
+                                    while chunk := vf.read(1024 * 1024):
+                                        yield chunk
+
+                            st.success("Done! Click below to download.")
+                            st.download_button(
+                                label="Download burned video",
+                                data=_video_stream_burn(output_path),
+                                file_name="video_with_subtitles_burned.mp4",
+                                mime="video/mp4",
+                                use_container_width=True,
+                            )
+                        except (RuntimeError, FileNotFoundError) as e:
+                            st.error(str(e))
