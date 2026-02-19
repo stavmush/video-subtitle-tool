@@ -69,8 +69,9 @@ with st.sidebar:
 
     if whisper_model_size in ("large-v2", "large-v3"):
         st.warning(
-            "The **large** model needs ~1.5 GB free RAM. "
-            "Close other apps before running if you have 8 GB total."
+            "The **large** model needs ~1.5 GB RAM. On an 8 GB machine, "
+            "**close Chrome, Slack, and other heavy apps** before transcribing "
+            "or the OS will kill the process mid-run."
         )
 
     target_language = st.radio(
@@ -113,7 +114,15 @@ if uploaded_file and st.session_state["uploaded_video_path"] is None:
     st.session_state["uploaded_video_path"] = video_path
 
 if st.session_state["uploaded_video_path"]:
-    st.video(st.session_state["uploaded_video_path"])
+    video_path = st.session_state["uploaded_video_path"]
+    file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
+    if file_size_mb <= 200:
+        st.video(video_path)
+    else:
+        st.info(
+            f"Video uploaded: **{os.path.basename(video_path)}** "
+            f"({file_size_mb:.0f} MB) — preview skipped for large files to save RAM."
+        )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 2 — Transcribe

@@ -8,6 +8,7 @@ Advantages over openai-whisper:
   - Medium model uses ~770MB instead of 1.5GB
 """
 
+import gc
 import os
 import subprocess
 import tempfile
@@ -37,6 +38,7 @@ def _load_model(model_size: str) -> WhisperModel:
     Uses int8 quantization on CPU for minimal RAM usage.
     compute_type="int8" halves memory vs float32 with negligible accuracy loss.
     """
+    gc.collect()  # free any lingering objects before allocating the model
     return WhisperModel(model_size, device="cpu", compute_type="int8")
 
 
