@@ -390,15 +390,12 @@ if st.session_state["translation_done"]:
                                 output_path=output_path,
                             )
 
-                            def _video_stream_embed(path: str):
-                                with open(path, "rb") as vf:
-                                    while chunk := vf.read(1024 * 1024):
-                                        yield chunk
-
                             st.success("Done! Click below to download.")
+                            with open(output_path, "rb") as vf:
+                                video_bytes = vf.read()
                             st.download_button(
                                 label="Download video with embedded subtitles",
-                                data=_video_stream_embed(output_path),
+                                data=video_bytes,
                                 file_name="video_with_subtitles.mp4",
                                 mime="video/mp4",
                                 use_container_width=True,
@@ -452,15 +449,12 @@ if st.session_state["translation_done"]:
                                 font_size=font_size,
                             )
 
-                            def _video_stream_burn(path: str):
-                                with open(path, "rb") as vf:
-                                    while chunk := vf.read(1024 * 1024):
-                                        yield chunk
-
                             st.success("Done! Click below to download.")
+                            with open(output_path, "rb") as vf:
+                                video_bytes = vf.read()
                             st.download_button(
                                 label="Download burned video",
-                                data=_video_stream_burn(output_path),
+                                data=video_bytes,
                                 file_name="video_with_subtitles_burned.mp4",
                                 mime="video/mp4",
                                 use_container_width=True,
