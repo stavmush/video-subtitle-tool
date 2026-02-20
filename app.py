@@ -100,7 +100,7 @@ st.caption("Transcribe, translate, edit, and export subtitles for your videos.")
 # ═══════════════════════════════════════════════════════════════════════════════
 st.header("1. Input")
 
-tab_video, tab_srt = st.tabs(["Transcribe from video", "Load existing SRT"])
+tab_video, tab_srt, tab_embed = st.tabs(["Transcribe from video", "Load existing SRT", "Embed SRT into video"])
 
 # ── Tab A: upload video and transcribe ────────────────────────────────────────
 with tab_video:
@@ -176,6 +176,69 @@ with tab_srt:
 
         if st.session_state["uploaded_video_path"]:
             st.info(f"Video ready: **{os.path.basename(st.session_state['uploaded_video_path'])}**")
+
+# ── Tab C: quick embed — SRT + video → output, no editor ─────────────────────
+with tab_embed:
+    st.caption("Upload an SRT file and a video, then embed the subtitles directly — no editing needed.")
+
+    col_srt, col_vid = st.columns(2)
+
+    with col_srt:
+        st.markdown("**SRT file**")
+        quick_srt = st.file_uploader(
+            "SRT file",
+            type=["srt"],
+            label_visibility="collapsed",
+            key="quick_srt",
+        )
+
+    with col_vid:
+        st.markdown("**Video file**")
+        quick_video = st.file_uploader(
+            "Video file",
+            type=["mp4", "mkv", "avi", "mov"],
+            label_visibility="collapsed",
+            key="quick_video",
+        )
+
+    if quick_srt and quick_video:
+        if st.button("Embed subtitles into video", type="primary", use_container_width=True):
+            try:
+                quick_tmp = tempfile.mkdtemp(prefix="quick_embed_")
+                quick_srt_path = os.path.join(quick_tmp, "subtitles.srt")
+                quick_video_path = os.path.join(quick_tmp, quick_video.name)
+                quick_output_path = os.path.join(quick_tmp, "output_embedded.mp4")
+
+                with open(quick_srt_path, "wb") as f:
+                    f.write(quick_srt.read())
+                with open(quick_video_path, "wb") as f:
+                    f.write(quick_video.getbuffer())
+
+                with st.spinner("Embedding subtitles with FFmpeg..."):
+                    embed_subtitles(
+                        input_video=quick_video_path,
+                        srt_path=quick_srt_path,
+                        output_path=quick_output_path,
+                    )
+
+                st.success("Done!")
+                with open(quick_output_path, "rb") as vf:
+                    video_bytes = vf.read()
+                st.download_button(
+                    label="Download video with embedded subtitles",
+                    data=video_bytes,
+                    file_name="video_with_subtitles.mp4",
+                    mime="video/mp4",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(str(e))
+            finally:
+                shutil.rmtree(quick_tmp, ignore_errors=True)
+    elif quick_srt and not quick_video:
+        st.info("Upload a video file to continue.")
+    elif quick_video and not quick_srt:
+        st.info("Upload an SRT file to continue.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 2 — Transcribe  (skipped in SRT mode)
