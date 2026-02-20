@@ -16,7 +16,7 @@ import tempfile
 import pandas as pd
 import streamlit as st
 
-from utils.srt_utils import dataframe_to_srt, segments_to_dataframe
+from utils.srt_utils import dataframe_to_srt, parse_srt_to_dataframe, segments_to_dataframe
 from utils.transcribe import transcribe_to_english, transcribe_video
 from utils.translate import translate_segments
 from utils.video import burn_subtitles, embed_subtitles
@@ -34,6 +34,7 @@ STATE_DEFAULTS: dict = {
     "translation_done": False,
     "srt_content": None,
     "temp_dir": None,
+    "srt_mode": False,          # True when user loaded an existing SRT (skips transcribe/translate)
 }
 
 for key, default in STATE_DEFAULTS.items():
@@ -95,39 +96,91 @@ st.title("Video Subtitle Tool")
 st.caption("Transcribe, translate, edit, and export subtitles for your videos.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 1 — Upload
+# STEP 1 — Input (video or existing SRT)
 # ═══════════════════════════════════════════════════════════════════════════════
-st.header("1. Upload Video")
+st.header("1. Input")
 
-uploaded_file = st.file_uploader(
-    "Choose a video file",
-    type=["mp4", "mkv", "avi", "mov"],
-    label_visibility="collapsed",
-)
+tab_video, tab_srt = st.tabs(["Transcribe from video", "Load existing SRT"])
 
-if uploaded_file and st.session_state["uploaded_video_path"] is None:
-    tmp_dir = tempfile.mkdtemp(prefix="subtitle_tool_")
-    st.session_state["temp_dir"] = tmp_dir
-    video_path = os.path.join(tmp_dir, uploaded_file.name)
-    with open(video_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    st.session_state["uploaded_video_path"] = video_path
+# ── Tab A: upload video and transcribe ────────────────────────────────────────
+with tab_video:
+    uploaded_file = st.file_uploader(
+        "Choose a video file",
+        type=["mp4", "mkv", "avi", "mov"],
+        label_visibility="collapsed",
+    )
 
-if st.session_state["uploaded_video_path"]:
-    video_path = st.session_state["uploaded_video_path"]
-    file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
-    if file_size_mb <= 200:
-        st.video(video_path)
-    else:
-        st.info(
-            f"Video uploaded: **{os.path.basename(video_path)}** "
-            f"({file_size_mb:.0f} MB) — preview skipped for large files to save RAM."
+    if uploaded_file and st.session_state["uploaded_video_path"] is None:
+        tmp_dir = tempfile.mkdtemp(prefix="subtitle_tool_")
+        st.session_state["temp_dir"] = tmp_dir
+        video_path = os.path.join(tmp_dir, uploaded_file.name)
+        with open(video_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.session_state["uploaded_video_path"] = video_path
+        st.session_state["srt_mode"] = False
+
+    if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
+        video_path = st.session_state["uploaded_video_path"]
+        file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
+        if file_size_mb <= 200:
+            st.video(video_path)
+        else:
+            st.info(
+                f"Video uploaded: **{os.path.basename(video_path)}** "
+                f"({file_size_mb:.0f} MB) — preview skipped for large files to save RAM."
+            )
+
+# ── Tab B: load an existing SRT file ─────────────────────────────────────────
+with tab_srt:
+    uploaded_srt = st.file_uploader(
+        "Choose an SRT file",
+        type=["srt"],
+        label_visibility="collapsed",
+        key="srt_uploader",
+    )
+
+    if uploaded_srt and not st.session_state["translation_done"]:
+        try:
+            srt_text = uploaded_srt.read().decode("utf-8")
+            df = parse_srt_to_dataframe(srt_text)
+            if df.empty:
+                st.error("The SRT file appears to be empty or could not be parsed.")
+            else:
+                if st.session_state["temp_dir"] is None:
+                    st.session_state["temp_dir"] = tempfile.mkdtemp(prefix="subtitle_tool_")
+                st.session_state["subtitles_df"] = df
+                st.session_state["srt_content"] = srt_text
+                st.session_state["translation_done"] = True
+                st.session_state["transcription_done"] = True
+                st.session_state["srt_mode"] = True
+                st.rerun()
+        except Exception as e:
+            st.error(f"Failed to parse SRT file: {e}")
+
+    if st.session_state["srt_mode"]:
+        st.success(f"SRT loaded — {len(st.session_state['subtitles_df'])} subtitles ready to edit.")
+
+        st.markdown("**Want to embed/burn these subtitles into a video?** Upload it below:")
+        uploaded_video_for_srt = st.file_uploader(
+            "Choose a video file (optional)",
+            type=["mp4", "mkv", "avi", "mov"],
+            label_visibility="collapsed",
+            key="video_for_srt",
         )
+        if uploaded_video_for_srt and st.session_state["uploaded_video_path"] is None:
+            video_path = os.path.join(st.session_state["temp_dir"], uploaded_video_for_srt.name)
+            with open(video_path, "wb") as f:
+                f.write(uploaded_video_for_srt.getbuffer())
+            st.session_state["uploaded_video_path"] = video_path
+            st.rerun()
+
+        if st.session_state["uploaded_video_path"]:
+            st.info(f"Video ready: **{os.path.basename(st.session_state['uploaded_video_path'])}**")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 2 — Transcribe
+# STEP 2 — Transcribe  (skipped in SRT mode)
 # ═══════════════════════════════════════════════════════════════════════════════
-if st.session_state["uploaded_video_path"]:
+if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
     st.header("2. Transcribe Audio")
 
     if not st.session_state["transcription_done"]:
@@ -177,9 +230,9 @@ if st.session_state["uploaded_video_path"]:
         st.success(f"Transcription complete. Detected language: **{src}**")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 3 — Translate
+# STEP 3 — Translate  (skipped in SRT mode)
 # ═══════════════════════════════════════════════════════════════════════════════
-if st.session_state["transcription_done"]:
+if st.session_state["transcription_done"] and not st.session_state["srt_mode"]:
     st.header("3. Translate")
 
     src = st.session_state["source_language"]
@@ -372,6 +425,12 @@ if st.session_state["translation_done"]:
     with col2:
         st.subheader("Add subtitles to video")
 
+        if not st.session_state["uploaded_video_path"]:
+            st.info(
+                "No video uploaded. Go to the **Load existing SRT** tab "
+                "and upload a video there to enable embed/burn."
+            )
+
         embed_tab, burn_tab = st.tabs(["Embed (Recommended)", "Burn (Hard subs)"])
 
         # ── Embed (soft track) ────────────────────────────────────────────────
@@ -381,7 +440,9 @@ if st.session_state["translation_done"]:
                 "Selectable in VLC, IINA, QuickTime, and most players. Fast."
             )
             if st.button("Embed subtitles", type="primary", use_container_width=True):
-                if not st.session_state["srt_content"]:
+                if not st.session_state["uploaded_video_path"]:
+                    st.error("Upload a video first (see the Load existing SRT tab).")
+                elif not st.session_state["srt_content"]:
                     st.error("Fix subtitle errors before embedding.")
                 else:
                     tmp_dir = st.session_state["temp_dir"]
@@ -435,7 +496,9 @@ if st.session_state["translation_done"]:
             font_size = st.slider("Font size", min_value=14, max_value=48, value=24, step=2)
 
             if st.button("Burn subtitles", type="primary", use_container_width=True):
-                if not st.session_state["srt_content"]:
+                if not st.session_state["uploaded_video_path"]:
+                    st.error("Upload a video first (see the Load existing SRT tab).")
+                elif not st.session_state["srt_content"]:
                     st.error("Fix subtitle errors before burning.")
                 elif target_language == "he" and not font_path:
                     st.error("Please provide a Hebrew font path for correct rendering.")
