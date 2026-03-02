@@ -27,6 +27,54 @@ def _has_libass() -> bool:
         return False
 
 
+_LANG_ISO639_2 = {"en": "eng", "he": "heb"}
+_LANG_TITLE = {"en": "English", "he": "Hebrew"}
+
+
+def embed_subtitles_multi(
+    input_video: str,
+    srt_tracks: list[tuple[str, str]],  # list of (srt_path, lang_code)
+    output_path: str,
+) -> None:
+    """
+    Embed multiple SRT subtitle tracks into an MP4 container.
+
+    Each track is selectable independently in VLC, IINA, QuickTime, etc.
+    No re-encoding — video and audio are stream-copied.
+
+    Args:
+        srt_tracks: list of (srt_path, lang_code) where lang_code is 'en' or 'he'
+
+    Raises:
+        RuntimeError: if FFmpeg fails
+    """
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg not found. Install: brew install ffmpeg")
+
+    cmd = ["ffmpeg", "-y", "-i", input_video]
+    for srt_path, _ in srt_tracks:
+        cmd += ["-i", srt_path]
+
+    cmd += ["-map", "0:v", "-map", "0:a"]
+    for i in range(len(srt_tracks)):
+        cmd += ["-map", str(i + 1)]
+
+    cmd += ["-c:v", "copy", "-c:a", "copy"]
+    for i in range(len(srt_tracks)):
+        cmd += [f"-c:s:{i}", "mov_text"]
+
+    for i, (_, lang) in enumerate(srt_tracks):
+        iso = _LANG_ISO639_2.get(lang, lang)
+        title = _LANG_TITLE.get(lang, lang)
+        cmd += [f"-metadata:s:s:{i}", f"language={iso}", f"-metadata:s:s:{i}", f"title={title}"]
+
+    cmd.append(output_path)
+
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"FFmpeg failed:\n{result.stderr.decode('utf-8', errors='replace')}")
+
+
 def embed_subtitles(
     input_video: str,
     srt_path: str,

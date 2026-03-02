@@ -16,10 +16,11 @@ import tempfile
 import pandas as pd
 import streamlit as st
 
+from utils.improve import improve_text_list
 from utils.srt_utils import dataframe_to_srt, parse_srt_to_dataframe, segments_to_dataframe
 from utils.transcribe import transcribe_to_english, transcribe_video
-from utils.translate import translate_segments
-from utils.video import burn_subtitles, embed_subtitles
+from utils.translate import translate_segments, translate_text_list
+from utils.video import burn_subtitles, embed_subtitles, embed_subtitles_multi
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Video Subtitle Tool", layout="wide")
@@ -35,6 +36,7 @@ STATE_DEFAULTS: dict = {
     "srt_content": None,
     "temp_dir": None,
     "srt_mode": False,          # True when user loaded an existing SRT (skips transcribe/translate)
+    "loaded_srt_name": None,    # Filename of last loaded SRT, to detect new uploads
 }
 
 for key, default in STATE_DEFAULTS.items():
@@ -45,6 +47,12 @@ for key, default in STATE_DEFAULTS.items():
 def _cleanup_temp(tmp_dir: str | None) -> None:
     if tmp_dir and os.path.isdir(tmp_dir):
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _clear_editor_state() -> None:
+    """Clear the data_editor's stored deltas before programmatic DataFrame updates.
+    Without this, stale deltas from the old data get re-applied to the new DataFrame."""
+    st.session_state.pop("subtitle_editor", None)
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -139,7 +147,7 @@ with tab_srt:
         key="srt_uploader",
     )
 
-    if uploaded_srt and not st.session_state["translation_done"]:
+    if uploaded_srt and st.session_state.get("loaded_srt_name") != uploaded_srt.name:
         try:
             srt_text = uploaded_srt.read().decode("utf-8")
             df = parse_srt_to_dataframe(srt_text)
@@ -153,6 +161,8 @@ with tab_srt:
                 st.session_state["translation_done"] = True
                 st.session_state["transcription_done"] = True
                 st.session_state["srt_mode"] = True
+                st.session_state["loaded_srt_name"] = uploaded_srt.name
+                _clear_editor_state()
                 st.rerun()
         except Exception as e:
             st.error(f"Failed to parse SRT file: {e}")
@@ -202,39 +212,82 @@ with tab_embed:
         )
 
     if quick_srt and quick_video:
-        if st.button("Embed subtitles into video", type="primary", use_container_width=True):
-            try:
-                quick_tmp = tempfile.mkdtemp(prefix="quick_embed_")
-                quick_srt_path = os.path.join(quick_tmp, "subtitles.srt")
-                quick_video_path = os.path.join(quick_tmp, quick_video.name)
-                quick_output_path = os.path.join(quick_tmp, "output_embedded.mp4")
+        ql_col_a, ql_col_b = st.columns(2)
+        with ql_col_a:
+            quick_primary_lang = st.selectbox(
+                "Primary SRT language",
+                ["en", "he"],
+                format_func=lambda x: "English" if x == "en" else "Hebrew",
+                key="quick_primary_lang",
+            )
+        with ql_col_b:
+            quick_add_second = st.checkbox("Add a second subtitle track", key="quick_add_second")
 
-                with open(quick_srt_path, "wb") as f:
-                    f.write(quick_srt.read())
-                with open(quick_video_path, "wb") as f:
-                    f.write(quick_video.getbuffer())
-
-                with st.spinner("Embedding subtitles with FFmpeg..."):
-                    embed_subtitles(
-                        input_video=quick_video_path,
-                        srt_path=quick_srt_path,
-                        output_path=quick_output_path,
-                    )
-
-                st.success("Done!")
-                with open(quick_output_path, "rb") as vf:
-                    video_bytes = vf.read()
-                st.download_button(
-                    label="Download video with embedded subtitles",
-                    data=video_bytes,
-                    file_name="video_with_subtitles.mp4",
-                    mime="video/mp4",
-                    use_container_width=True,
+        quick_srt_2 = None
+        quick_second_lang = None
+        if quick_add_second:
+            qs2_col_a, qs2_col_b = st.columns(2)
+            with qs2_col_a:
+                quick_second_lang = st.selectbox(
+                    "Second track language",
+                    ["he", "en"],
+                    format_func=lambda x: "Hebrew" if x == "he" else "English",
+                    key="quick_second_lang",
                 )
-            except Exception as e:
-                st.error(str(e))
-            finally:
-                shutil.rmtree(quick_tmp, ignore_errors=True)
+            with qs2_col_b:
+                quick_srt_2 = st.file_uploader(
+                    "Second SRT file",
+                    type=["srt"],
+                    label_visibility="collapsed",
+                    key="quick_srt_2",
+                )
+
+        if st.button("Embed subtitles into video", type="primary", use_container_width=True):
+            if quick_add_second and not quick_srt_2:
+                st.error("Upload the second SRT file or uncheck 'Add a second subtitle track'.")
+            else:
+                quick_tmp = tempfile.mkdtemp(prefix="quick_embed_")
+                try:
+                    quick_srt_path = os.path.join(quick_tmp, "subtitles.srt")
+                    quick_video_path = os.path.join(quick_tmp, quick_video.name)
+                    quick_output_path = os.path.join(quick_tmp, "output_embedded.mp4")
+
+                    with open(quick_srt_path, "wb") as f:
+                        f.write(quick_srt.read())
+                    with open(quick_video_path, "wb") as f:
+                        f.write(quick_video.getbuffer())
+
+                    with st.spinner("Embedding subtitles with FFmpeg..."):
+                        if quick_add_second and quick_srt_2:
+                            quick_srt_path_2 = os.path.join(quick_tmp, "subtitles_2.srt")
+                            with open(quick_srt_path_2, "wb") as f:
+                                f.write(quick_srt_2.read())
+                            embed_subtitles_multi(
+                                input_video=quick_video_path,
+                                srt_tracks=[(quick_srt_path, quick_primary_lang), (quick_srt_path_2, quick_second_lang)],
+                                output_path=quick_output_path,
+                            )
+                        else:
+                            embed_subtitles(
+                                input_video=quick_video_path,
+                                srt_path=quick_srt_path,
+                                output_path=quick_output_path,
+                            )
+
+                    st.success("Done!")
+                    with open(quick_output_path, "rb") as vf:
+                        video_bytes = vf.read()
+                    st.download_button(
+                        label="Download video with embedded subtitles",
+                        data=video_bytes,
+                        file_name="video_with_subtitles.mp4",
+                        mime="video/mp4",
+                        use_container_width=True,
+                    )
+                except Exception as e:
+                    st.error(str(e))
+                finally:
+                    shutil.rmtree(quick_tmp, ignore_errors=True)
     elif quick_srt and not quick_video:
         st.info("Upload a video file to continue.")
     elif quick_video and not quick_srt:
@@ -412,12 +465,59 @@ if st.session_state["translation_done"]:
 
     df = st.session_state["subtitles_df"]
 
-    col_left, col_right = st.columns([4, 1])
+    col_left, col_mid, col_right = st.columns([3, 2, 1])
+    with col_left:
+        st.caption("Fix grammar and fluency of English subtitles using a local AI model.")
+        if st.button("Improve subtitles (grammar)", use_container_width=True):
+            try:
+                with st.spinner("Improving subtitles (downloading model on first run)..."):
+                    improved = improve_text_list(df["text"].tolist())
+                    new_df = df.copy()
+                    new_df["text"] = improved
+                    st.session_state["subtitles_df"] = new_df
+                _clear_editor_state()
+                st.rerun()
+            except Exception as e:
+                st.error(f"Improvement failed: {e}")
+    with col_mid:
+        tl_col_a, tl_col_b = st.columns(2)
+        with tl_col_a:
+            tl_src = st.selectbox(
+                "From",
+                ["en", "he"],
+                format_func=lambda x: "English" if x == "en" else "Hebrew",
+                key="tl_src",
+                label_visibility="collapsed",
+            )
+        with tl_col_b:
+            tl_tgt = st.selectbox(
+                "To",
+                ["he", "en"],
+                format_func=lambda x: "Hebrew" if x == "he" else "English",
+                key="tl_tgt",
+                label_visibility="collapsed",
+            )
+        if st.button("Translate subtitles", use_container_width=True):
+            if tl_src == tl_tgt:
+                st.warning("Source and target language are the same.")
+            else:
+                try:
+                    with st.spinner(f"Translating subtitles to {'Hebrew' if tl_tgt == 'he' else 'English'}..."):
+                        texts = df["text"].tolist()
+                        translated = translate_text_list(texts, tl_src, tl_tgt)
+                        new_df = df.copy()
+                        new_df["text"] = translated
+                        st.session_state["subtitles_df"] = new_df
+                    _clear_editor_state()
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Translation failed: {e}")
     with col_right:
         if st.button("Renumber subtitles"):
             df = df.copy()
             df["index"] = range(1, len(df) + 1)
             st.session_state["subtitles_df"] = df
+            _clear_editor_state()
             st.rerun()
 
     edited_df = st.data_editor(
@@ -502,11 +602,41 @@ if st.session_state["translation_done"]:
                 "Adds a subtitle track inside the MP4 container — **no re-encoding**. "
                 "Selectable in VLC, IINA, QuickTime, and most players. Fast."
             )
+
+            primary_lang = st.selectbox(
+                "Primary track language",
+                ["en", "he"],
+                index=0 if target_language == "en" else 1,
+                format_func=lambda x: "English" if x == "en" else "Hebrew",
+                key="embed_primary_lang",
+            )
+
+            add_second_track = st.checkbox("Add a second subtitle track", key="embed_add_second")
+            second_srt_content = None
+            second_lang = None
+            if add_second_track:
+                second_lang = st.selectbox(
+                    "Second track language",
+                    ["he", "en"],
+                    format_func=lambda x: "Hebrew" if x == "he" else "English",
+                    key="embed_second_lang",
+                )
+                second_srt_file = st.file_uploader(
+                    "Second SRT file",
+                    type=["srt"],
+                    label_visibility="collapsed",
+                    key="embed_second_srt",
+                )
+                if second_srt_file:
+                    second_srt_content = second_srt_file.read().decode("utf-8")
+
             if st.button("Embed subtitles", type="primary", use_container_width=True):
                 if not st.session_state["uploaded_video_path"]:
                     st.error("Upload a video first (see the Load existing SRT tab).")
                 elif not st.session_state["srt_content"]:
                     st.error("Fix subtitle errors before embedding.")
+                elif add_second_track and not second_srt_content:
+                    st.error("Upload the second SRT file or uncheck 'Add a second subtitle track'.")
                 else:
                     tmp_dir = st.session_state["temp_dir"]
                     srt_path = os.path.join(tmp_dir, "subtitles.srt")
@@ -517,11 +647,21 @@ if st.session_state["translation_done"]:
 
                     with st.spinner("Embedding subtitles with FFmpeg..."):
                         try:
-                            embed_subtitles(
-                                input_video=st.session_state["uploaded_video_path"],
-                                srt_path=srt_path,
-                                output_path=output_path,
-                            )
+                            if add_second_track and second_srt_content:
+                                srt_path_2 = os.path.join(tmp_dir, "subtitles_2.srt")
+                                with open(srt_path_2, "w", encoding="utf-8") as f:
+                                    f.write(second_srt_content)
+                                embed_subtitles_multi(
+                                    input_video=st.session_state["uploaded_video_path"],
+                                    srt_tracks=[(srt_path, primary_lang), (srt_path_2, second_lang)],
+                                    output_path=output_path,
+                                )
+                            else:
+                                embed_subtitles(
+                                    input_video=st.session_state["uploaded_video_path"],
+                                    srt_path=srt_path,
+                                    output_path=output_path,
+                                )
 
                             st.success("Done! Click below to download.")
                             with open(output_path, "rb") as vf:

@@ -2,7 +2,7 @@
 Offline translation using Helsinki-NLP MarianMT models from HuggingFace.
 
 Supported target languages:
-  - English ("en"): handled upstream via Whisper's translate task
+  - English ("en"): handled upstream via Whisper's translate task, or via opus-mt-he-en
   - Hebrew ("he"): uses opus-mt-en-he (~300MB, downloaded on first use)
 
 For any-language → Hebrew, the caller must supply whisper_segments_english
@@ -17,6 +17,7 @@ from typing import Any
 Segment = dict[str, Any]
 
 HELSINKI_EN_HE = "Helsinki-NLP/opus-mt-en-he"
+HELSINKI_HE_EN = "Helsinki-NLP/opus-mt-tc-big-he-en"
 
 
 @st.cache_resource(show_spinner=False)
@@ -85,3 +86,20 @@ def translate_segments(
         ]
 
     raise ValueError(f"Unsupported target language: '{target_lang}'. Supported: 'en', 'he'.")
+
+
+def translate_text_list(texts: list[str], src: str, tgt: str) -> list[str]:
+    """
+    Translate a plain list of strings between supported language pairs.
+    Currently supported: 'en'↔'he'.
+
+    Raises:
+        ValueError: if the language pair is not supported
+    """
+    if src == tgt:
+        return texts
+    if src == "en" and tgt == "he":
+        return _translate_texts(texts, HELSINKI_EN_HE)
+    if src == "he" and tgt == "en":
+        return _translate_texts(texts, HELSINKI_HE_EN)
+    raise ValueError(f"Unsupported language pair: '{src}' → '{tgt}'.")
