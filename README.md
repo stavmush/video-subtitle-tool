@@ -1,77 +1,146 @@
-# Video Subtitle Tool
+# 🎬 Video Subtitle Tool
 
-A local Streamlit app that transcribes MP4 videos with Whisper, translates subtitles to English or Hebrew using offline AI models, lets you edit them, and exports as SRT or a burned-in MP4.
+> Local, privacy-first AI subtitle generation — no cloud, no API keys, no data leaving your machine.
 
-## Features
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-app-FF4B4B?logo=streamlit)](https://streamlit.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Whisper](https://img.shields.io/badge/Powered%20by-Whisper-green?logo=openai)](https://github.com/openai/whisper)
 
-- Upload MP4, MKV, AVI, or MOV videos
-- Transcribe audio with [OpenAI Whisper](https://github.com/openai/whisper) (runs fully locally)
-- Translate to **English** or **Hebrew** using offline [Helsinki-NLP](https://huggingface.co/Helsinki-NLP) models
-- Edit subtitles in an interactive table (adjust text and timestamps, add/delete rows)
-- Export as `.srt` file or burn subtitles permanently into the video
+Upload a video → transcribe with Whisper → translate → edit subtitles → export SRT or burned-in MP4. Everything runs locally using open-source models.
 
-## Setup
+---
 
-### 1. System dependencies
+## ✨ Features
 
-**macOS:**
+- **Multi-format support** — MP4, MKV, AVI, MOV
+- **Local transcription** — [faster-whisper](https://github.com/guillaumekln/faster-whisper) with 5 model sizes (tiny → large)
+- **Offline translation** — English ↔ Hebrew via [Helsinki-NLP](https://huggingface.co/Helsinki-NLP) transformer models
+- **Interactive subtitle editor** — edit text, adjust timestamps, add/delete rows live
+- **SRT import** — load and edit an existing `.srt` file without re-transcribing
+- **Grammar improvement** — AI-powered cleanup of transcribed text
+- **Export options** — download `.srt` or burn subtitles permanently into the video via FFmpeg
+- **Right-to-left support** — Hebrew subtitles render correctly in both SRT and burned video
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+**macOS**
 ```bash
 brew install ffmpeg
 ```
 
-**Ubuntu/Debian:**
+**Ubuntu / Debian**
 ```bash
 sudo apt update && sudo apt install -y ffmpeg
 ```
 
-### 2. Python environment
+**Windows**
+Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH.
+
+### Install & Run
 
 ```bash
+git clone https://github.com/stavmush/video-subtitle-tool.git
 cd video-subtitle-tool
+
 python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-> **Note:** PyTorch is a large dependency (~1–2 GB). The first `pip install` will take a while.
+pip install -r requirements.txt  # ~1–2 GB, takes a few minutes first time
 
-### 3. Run
-
-```bash
 streamlit run app.py
 ```
 
-The app opens at `http://localhost:8501`.
+Open [http://localhost:8501](http://localhost:8501) in your browser.
 
-## Model Download Notes
+---
 
-Models are downloaded automatically on first use and cached locally:
+## 🧠 How It Works
 
-| Model | Size | When |
+```
+Video file
+    ↓  FFmpeg extracts audio
+Whisper model
+    ↓  Transcribes speech → raw subtitle segments
+Helsinki-NLP (optional)
+    ↓  Translates to English or Hebrew
+Subtitle editor
+    ↓  Edit text & timestamps in-browser
+Export
+    ↓  .srt file  OR  burned-in MP4 (FFmpeg + libass)
+```
+
+---
+
+## 📦 Model Reference
+
+Models are downloaded automatically on first use and cached to disk. After that, everything works offline.
+
+| Model | Size | Notes |
 |---|---|---|
-| Whisper (size you choose) | 75 MB – 1.5 GB | On first Transcribe |
-| Helsinki-NLP opus-mt-en-he | ~300 MB | On first Hebrew translation |
+| Whisper tiny | ~75 MB | Fastest, lowest accuracy |
+| Whisper base | ~140 MB | Good for clear audio |
+| Whisper small | ~460 MB | **Default** — best speed/accuracy tradeoff |
+| Whisper medium | ~1.5 GB | Better accuracy |
+| Whisper large | ~3 GB | Best accuracy, slow |
+| Helsinki-NLP (en→he) | ~300 MB | Downloaded on first Hebrew translation |
 
-After the first run, everything works offline.
+---
 
-## Hebrew Subtitles
+## 🌐 Hebrew / RTL Subtitles
 
-Hebrew text renders right-to-left automatically in the exported SRT and burned video (handled by FFmpeg's libass renderer). For burned-in subtitles you need a font with Hebrew glyph support:
+For burned-in Hebrew subtitles, you need a font with Hebrew glyph support:
 
-- **Noto Sans Hebrew** (recommended): `brew install font-noto-sans-hebrew` (macOS)
-  Font path: `/Library/Fonts/NotoSansHebrew-Regular.ttf`
-- **Arial Unicode MS**: usually at `/Library/Fonts/Arial Unicode.ttf` on macOS
+**macOS (recommended):**
+```bash
+brew install font-noto-sans-hebrew
+# Font path: /Library/Fonts/NotoSansHebrew-Regular.ttf
+```
 
-Enter the font path in the app before burning.
+**Linux:**
+```bash
+sudo apt install fonts-noto
+```
 
-## Whisper Model Sizes
+Enter the font path in the app's burn settings before exporting.
 
-| Size | VRAM | Speed | Accuracy |
-|---|---|---|---|
-| tiny | ~1 GB | fastest | lowest |
-| base | ~1 GB | fast | low |
-| small | ~2 GB | moderate | good |
-| medium | ~5 GB | slow | great |
-| large | ~10 GB | slowest | best |
+---
 
-`small` is the default — a good balance for most videos.
+## 🗂 Project Structure
+
+```
+video-subtitle-tool/
+├── app.py                  # Main Streamlit app
+├── requirements.txt
+└── utils/
+    ├── transcribe.py       # Whisper transcription
+    ├── translate.py        # Helsinki-NLP translation
+    ├── improve.py          # Grammar improvement
+    ├── srt_utils.py        # SRT parsing / formatting
+    └── video.py            # FFmpeg burn-in
+```
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+
+Ideas for what to work on:
+
+- [ ] Additional translation language pairs
+- [ ] Subtitle styling options (font, size, color, position)
+- [ ] Batch processing multiple videos
+- [ ] Docker image for zero-setup deployment
+- [ ] Word-level timestamp highlighting
+- [ ] Speaker diarization
+
+---
+
+## 📄 License
+
+MIT — see [LICENSE](LICENSE).
