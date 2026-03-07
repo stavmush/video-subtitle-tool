@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 
 from utils.improve import improve_text_list
-from utils.srt_utils import dataframe_to_srt, parse_srt_to_dataframe, segments_to_dataframe
+from utils.srt_utils import dataframe_to_srt, merge_srt_dataframes, parse_srt_to_dataframe, segments_to_dataframe
 from utils.transcribe import transcribe_to_english, transcribe_video
 from utils.translate import translate_segments, translate_text_list
 from utils.video import burn_subtitles, embed_subtitles, embed_subtitles_multi
@@ -38,6 +38,7 @@ STATE_DEFAULTS: dict = {
     "srt_mode": False,          # True when user loaded an existing SRT (skips transcribe/translate)
     "loaded_srt_name": None,    # Filename of last loaded SRT, to detect new uploads
     "loaded_video_name": None,  # Filename of last uploaded video, to detect new uploads
+    "merge_srt_names": [],      # List of filenames from last merge, to detect new uploads
 }
 
 for key, default in STATE_DEFAULTS.items():
@@ -109,7 +110,7 @@ st.caption("Transcribe, translate, edit, and export subtitles for your videos.")
 # ═══════════════════════════════════════════════════════════════════════════════
 st.header("1. Input")
 
-tab_video, tab_srt, tab_embed = st.tabs(["Transcribe from video", "Load existing SRT", "Embed SRT into video"])
+tab_video, tab_srt, tab_embed, tab_merge = st.tabs(["Transcribe from video", "Load existing SRT", "Embed SRT into video", "Merge SRT files"])
 
 # ── Tab A: upload video and transcribe ────────────────────────────────────────
 with tab_video:
@@ -302,6 +303,59 @@ with tab_embed:
         st.info("Upload a video file to continue.")
     elif quick_video and not quick_srt:
         st.info("Upload an SRT file to continue.")
+
+# ── Tab D: merge multiple SRT files into one ──────────────────────────────────
+with tab_merge:
+    st.caption("Upload two or more SRT files. Timestamps will be auto-offset so they chain sequentially.")
+
+    merge_files = st.file_uploader(
+        "Choose SRT files",
+        type=["srt"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+        key="merge_srt_uploader",
+    )
+
+    if merge_files:
+        st.markdown("**Merge order:**")
+        for i, f in enumerate(merge_files, 1):
+            st.markdown(f"{i}. {f.name}")
+
+    if st.button(
+        "Merge SRT files",
+        type="primary",
+        disabled=len(merge_files) < 2 if merge_files else True,
+        use_container_width=True,
+    ):
+        try:
+            dfs = []
+            for f in merge_files:
+                srt_text = f.read().decode("utf-8")
+                df = parse_srt_to_dataframe(srt_text)
+                if df.empty:
+                    st.error(f"'{f.name}' could not be parsed or is empty.")
+                    st.stop()
+                dfs.append(df)
+
+            merged_df = merge_srt_dataframes(dfs)
+
+            if st.session_state["temp_dir"] is None:
+                st.session_state["temp_dir"] = tempfile.mkdtemp(prefix="subtitle_tool_")
+            st.session_state["subtitles_df"] = merged_df
+            st.session_state["srt_content"] = dataframe_to_srt(merged_df)
+            st.session_state["srt_mode"] = True
+            st.session_state["transcription_done"] = True
+            st.session_state["translation_done"] = True
+            st.session_state["merge_srt_names"] = [f.name for f in merge_files]
+            _clear_editor_state()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Merge failed: {e}")
+
+    if st.session_state["srt_mode"] and st.session_state.get("merge_srt_names"):
+        n = len(st.session_state["subtitles_df"])
+        files = ", ".join(st.session_state["merge_srt_names"])
+        st.success(f"Merged {len(st.session_state['merge_srt_names'])} files ({files}) — {n} subtitles ready to edit.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 2 — Transcribe  (skipped in SRT mode)
