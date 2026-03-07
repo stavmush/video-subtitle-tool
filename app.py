@@ -37,6 +37,7 @@ STATE_DEFAULTS: dict = {
     "temp_dir": None,
     "srt_mode": False,          # True when user loaded an existing SRT (skips transcribe/translate)
     "loaded_srt_name": None,    # Filename of last loaded SRT, to detect new uploads
+    "loaded_video_name": None,  # Filename of last uploaded video, to detect new uploads
 }
 
 for key, default in STATE_DEFAULTS.items():
@@ -118,14 +119,23 @@ with tab_video:
         label_visibility="collapsed",
     )
 
-    if uploaded_file and st.session_state["uploaded_video_path"] is None:
+    if uploaded_file and st.session_state.get("loaded_video_name") != uploaded_file.name:
+        _cleanup_temp(st.session_state["temp_dir"])
         tmp_dir = tempfile.mkdtemp(prefix="subtitle_tool_")
         st.session_state["temp_dir"] = tmp_dir
         video_path = os.path.join(tmp_dir, uploaded_file.name)
         with open(video_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
         st.session_state["uploaded_video_path"] = video_path
+        st.session_state["loaded_video_name"] = uploaded_file.name
         st.session_state["srt_mode"] = False
+        st.session_state["transcription_done"] = False
+        st.session_state["translation_done"] = False
+        st.session_state["subtitles_df"] = None
+        st.session_state["srt_content"] = None
+        st.session_state["whisper_segments"] = None
+        _clear_editor_state()
+        st.rerun()
 
     if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
         video_path = st.session_state["uploaded_video_path"]
