@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 
 from utils.improve import improve_text_list
-from utils.srt_utils import dataframe_to_srt, merge_srt_dataframes, parse_srt_to_dataframe, segments_to_dataframe
+from utils.srt_utils import _str_to_timedelta, dataframe_to_srt, merge_srt_dataframes, parse_srt_to_dataframe, segments_to_dataframe
 from utils.transcribe import transcribe_to_english, transcribe_video
 from utils.translate import translate_segments, translate_text_list
 from utils.video import burn_subtitles, embed_subtitles, embed_subtitles_multi
@@ -529,6 +529,42 @@ if st.session_state["translation_done"]:
 
     df = st.session_state["subtitles_df"]
 
+    # ── Stats bar ─────────────────────────────────────────────────────────────
+    try:
+        durations = [
+            (_str_to_timedelta(str(row["end"])) - _str_to_timedelta(str(row["start"]))).total_seconds()
+            for _, row in df.iterrows()
+        ]
+        avg_duration = sum(durations) / len(durations) if durations else 0.0
+        total_duration_str = str(df["end"].iloc[-1]) if not df.empty else "—"
+        stat_col1, stat_col2, stat_col3 = st.columns(3)
+        stat_col1.metric("Subtitles", len(df))
+        stat_col2.metric("Total duration", total_duration_str)
+        stat_col3.metric("Avg on screen", f"{avg_duration:.1f}s")
+    except Exception:
+        pass  # don't let a bad timestamp break the editor
+
+    # ── Find & replace ────────────────────────────────────────────────────────
+    with st.expander("Find & replace"):
+        fr_col_a, fr_col_b = st.columns(2)
+        with fr_col_a:
+            fr_search = st.text_input("Find", key="fr_search", placeholder="Search text...")
+        with fr_col_b:
+            fr_replace = st.text_input("Replace with", key="fr_replace", placeholder="Replacement...")
+        fr_case = st.checkbox("Case sensitive", value=False, key="fr_case")
+        if st.button("Replace all", use_container_width=True, disabled=not fr_search):
+            before = df["text"].copy()
+            new_text = df["text"].str.replace(fr_search, fr_replace, case=fr_case, regex=False)
+            count = (new_text != before).sum()
+            if count:
+                new_df = df.copy()
+                new_df["text"] = new_text
+                st.session_state["subtitles_df"] = new_df
+                _clear_editor_state()
+                st.rerun()
+            else:
+                st.info(f'No matches found for "{fr_search}".')
+
     col_left, col_mid, col_right = st.columns([3, 2, 1])
     with col_left:
         st.caption("Fix grammar and fluency of English subtitles using a local AI model.")
@@ -616,8 +652,19 @@ if st.session_state["translation_done"]:
         key="subtitle_editor",
     )
 
-    # Persist edits and regenerate SRT
-    st.session_state["subtitles_df"] = edited_df
+    # Persist edits: if the user changed anything, bake the delta into session
+    # state and clear it so it isn't re-applied on the next unrelated rerun
+    # (stale deltas being re-applied is what causes the intermittent revert bug).
+    try:
+        dfs_equal = edited_df.equals(df)
+    except Exception:
+        dfs_equal = False
+    if not dfs_equal:
+        st.session_state["subtitles_df"] = edited_df
+        _clear_editor_state()
+        st.rerun()
+
+    # Regenerate SRT from current state
     try:
         srt_text = dataframe_to_srt(edited_df)
         st.session_state["srt_content"] = srt_text
