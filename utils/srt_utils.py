@@ -105,3 +105,22 @@ def parse_srt_to_dataframe(srt_text: str) -> pd.DataFrame:
         for sub in parsed
     ]
     return pd.DataFrame(rows, columns=SUBTITLE_COLUMNS)
+
+
+def merge_srt_dataframes(dfs: list[pd.DataFrame]) -> pd.DataFrame:
+    """Concatenate SRT DataFrames, offsetting each by the end time of the previous."""
+    merged = []
+    offset = timedelta(0)
+    for df in dfs:
+        shifted = df.copy()
+        shifted["start"] = shifted["start"].apply(
+            lambda t: _srt_timestamp_to_str(_str_to_timedelta(t) + offset)
+        )
+        shifted["end"] = shifted["end"].apply(
+            lambda t: _srt_timestamp_to_str(_str_to_timedelta(t) + offset)
+        )
+        offset += _str_to_timedelta(df["end"].iloc[-1])
+        merged.append(shifted)
+    result = pd.concat(merged, ignore_index=True)
+    result["index"] = range(1, len(result) + 1)
+    return result
