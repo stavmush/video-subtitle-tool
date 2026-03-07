@@ -652,8 +652,19 @@ if st.session_state["translation_done"]:
         key="subtitle_editor",
     )
 
-    # Persist edits and regenerate SRT
-    st.session_state["subtitles_df"] = edited_df
+    # Persist edits: if the user changed anything, bake the delta into session
+    # state and clear it so it isn't re-applied on the next unrelated rerun
+    # (stale deltas being re-applied is what causes the intermittent revert bug).
+    try:
+        dfs_equal = edited_df.equals(df)
+    except Exception:
+        dfs_equal = False
+    if not dfs_equal:
+        st.session_state["subtitles_df"] = edited_df
+        _clear_editor_state()
+        st.rerun()
+
+    # Regenerate SRT from current state
     try:
         srt_text = dataframe_to_srt(edited_df)
         st.session_state["srt_content"] = srt_text
