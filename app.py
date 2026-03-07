@@ -16,6 +16,7 @@ import tempfile
 import pandas as pd
 import streamlit as st
 
+from utils.autosave import clear_session, load_session, save_session
 from utils.improve import improve_text_list
 from utils.srt_utils import _str_to_timedelta, dataframe_to_srt, merge_srt_dataframes, parse_srt_to_dataframe, segments_to_dataframe
 from utils.transcribe import transcribe_to_english, transcribe_video
@@ -39,6 +40,7 @@ STATE_DEFAULTS: dict = {
     "loaded_srt_name": None,    # Filename of last loaded SRT, to detect new uploads
     "loaded_video_name": None,  # Filename of last uploaded video, to detect new uploads
     "merge_srt_names": [],      # List of filenames from last merge, to detect new uploads
+    "autosave_dismissed": False, # True once user has responded to the restore banner this session
 }
 
 for key, default in STATE_DEFAULTS.items():
@@ -95,6 +97,7 @@ with st.sidebar:
 
     if st.button("Reset / Start Over", type="secondary", use_container_width=True):
         _cleanup_temp(st.session_state["temp_dir"])
+        clear_session()
         for key, default in STATE_DEFAULTS.items():
             st.session_state[key] = default
         st.rerun()
@@ -104,6 +107,34 @@ with st.sidebar:
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("Video Subtitle Tool")
 st.caption("Transcribe, translate, edit, and export subtitles for your videos.")
+
+# ── Autosave restore banner ───────────────────────────────────────────────────
+_autosave = load_session()
+if _autosave and not st.session_state["autosave_dismissed"] and not st.session_state["translation_done"]:
+    saved_at = _autosave.get("saved_at", "unknown time")
+    src = _autosave.get("source_filename") or "unknown file"
+    st.warning(f"Unsaved session found — **{src}**, last saved {saved_at}")
+    _rb_col, _db_col = st.columns(2)
+    if _rb_col.button("Restore session", type="primary", use_container_width=True):
+        _df = pd.DataFrame(_autosave["subtitles"])
+        st.session_state["subtitles_df"] = _df
+        st.session_state["srt_content"] = dataframe_to_srt(_df)
+        st.session_state["srt_mode"] = True
+        st.session_state["transcription_done"] = True
+        st.session_state["translation_done"] = True
+        st.session_state["autosave_dismissed"] = True
+        _vp = _autosave.get("video_path", "")
+        if _vp and os.path.isfile(_vp):
+            if st.session_state["temp_dir"] is None:
+                st.session_state["temp_dir"] = tempfile.mkdtemp(prefix="subtitle_tool_")
+            st.session_state["uploaded_video_path"] = _vp
+        _clear_editor_state()
+        st.rerun()
+    if _db_col.button("Discard", use_container_width=True):
+        clear_session()
+        st.session_state["autosave_dismissed"] = True
+        st.rerun()
+    st.divider()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 1 — Input (video or existing SRT)
@@ -173,6 +204,7 @@ with tab_srt:
                 st.session_state["transcription_done"] = True
                 st.session_state["srt_mode"] = True
                 st.session_state["loaded_srt_name"] = uploaded_srt.name
+                save_session(df, uploaded_srt.name, st.session_state.get("uploaded_video_path"), target_language)
                 _clear_editor_state()
                 st.rerun()
         except Exception as e:
@@ -347,6 +379,7 @@ with tab_merge:
             st.session_state["transcription_done"] = True
             st.session_state["translation_done"] = True
             st.session_state["merge_srt_names"] = [f.name for f in merge_files]
+            save_session(merged_df, ", ".join(f.name for f in merge_files), st.session_state.get("uploaded_video_path"), target_language)
             _clear_editor_state()
             st.rerun()
         except Exception as e:
@@ -393,6 +426,7 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
                 st.session_state["source_language"] = detected_lang
                 st.session_state["transcription_done"] = True
                 st.session_state["subtitles_df"] = segments_to_dataframe(segments)
+                save_session(st.session_state["subtitles_df"], st.session_state.get("loaded_video_name"), st.session_state.get("uploaded_video_path"), target_language)
                 st.rerun()
             except MemoryError:
                 progress_bar.empty()
@@ -501,7 +535,12 @@ if st.session_state["transcription_done"] and not st.session_state["srt_mode"]:
 # STEP 4 — Edit Subtitles
 # ═══════════════════════════════════════════════════════════════════════════════
 if st.session_state["translation_done"]:
-    st.header("4. Edit Subtitles")
+    _as_meta = load_session()
+    if _as_meta:
+        st.header("4. Edit Subtitles")
+        st.caption(f"Last saved: {_as_meta['saved_at']}")
+    else:
+        st.header("4. Edit Subtitles")
     st.info(
         "**Click any cell to edit it.** "
         "You can change the subtitle text, adjust start/end timestamps (format: HH:MM:SS,mmm), "
@@ -661,6 +700,12 @@ if st.session_state["translation_done"]:
         dfs_equal = False
     if not dfs_equal:
         st.session_state["subtitles_df"] = edited_df
+        save_session(
+            edited_df,
+            source_filename=st.session_state.get("loaded_srt_name") or st.session_state.get("loaded_video_name"),
+            video_path=st.session_state.get("uploaded_video_path"),
+            target_language=target_language,
+        )
         _clear_editor_state()
         st.rerun()
 
