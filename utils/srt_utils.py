@@ -107,6 +107,22 @@ def parse_srt_to_dataframe(srt_text: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=SUBTITLE_COLUMNS)
 
 
+def apply_rtl_marks(srt_text: str) -> str:
+    """Prepend each subtitle with U+200F (RIGHT-TO-LEFT MARK).
+
+    Video players (VLC, QuickTime, etc.) default to LTR base direction when
+    rendering SRT subtitles. Without an explicit direction hint, the Unicode
+    Bidi algorithm moves trailing punctuation (e.g. a Hebrew period) to the
+    wrong visual edge. Prepending U+200F tells the algorithm the base
+    direction is RTL, so punctuation stays at the correct position.
+    """
+    parsed = list(srt.parse(srt_text))
+    for sub in parsed:
+        if not sub.content.startswith("\u200f"):
+            sub.content = "\u200f" + sub.content
+    return srt.compose(parsed)
+
+
 def merge_srt_dataframes(dfs: list[pd.DataFrame]) -> pd.DataFrame:
     """Concatenate SRT DataFrames, offsetting each by the end time of the previous."""
     merged = []

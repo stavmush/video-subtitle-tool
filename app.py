@@ -16,8 +16,9 @@ import tempfile
 import pandas as pd
 import streamlit as st
 
+from utils.autosave import clear_session, load_session, save_session
 from utils.improve import improve_text_list
-from utils.srt_utils import _str_to_timedelta, dataframe_to_srt, merge_srt_dataframes, parse_srt_to_dataframe, segments_to_dataframe
+from utils.srt_utils import _str_to_timedelta, apply_rtl_marks, dataframe_to_srt, merge_srt_dataframes, parse_srt_to_dataframe, segments_to_dataframe
 from utils.transcribe import transcribe_to_english, transcribe_video
 from utils.translate import translate_segments, translate_text_list
 from utils.video import burn_subtitles, embed_subtitles, embed_subtitles_multi
@@ -39,6 +40,8 @@ STATE_DEFAULTS: dict = {
     "loaded_srt_name": None,    # Filename of last loaded SRT, to detect new uploads
     "loaded_video_name": None,  # Filename of last uploaded video, to detect new uploads
     "merge_srt_names": [],      # List of filenames from last merge, to detect new uploads
+    "autosave_dismissed": False, # True once user has responded to the restore banner this session
+    "editor_render_df": None,    # Stable base passed to st.data_editor; only reset by button actions
 }
 
 for key, default in STATE_DEFAULTS.items():
@@ -95,6 +98,7 @@ with st.sidebar:
 
     if st.button("Reset / Start Over", type="secondary", use_container_width=True):
         _cleanup_temp(st.session_state["temp_dir"])
+        clear_session()
         for key, default in STATE_DEFAULTS.items():
             st.session_state[key] = default
         st.rerun()
@@ -104,6 +108,34 @@ with st.sidebar:
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("Video Subtitle Tool")
 st.caption("Transcribe, translate, edit, and export subtitles for your videos.")
+
+# ── Autosave restore banner ───────────────────────────────────────────────────
+_autosave = load_session()
+if _autosave and not st.session_state["autosave_dismissed"] and not st.session_state["translation_done"]:
+    saved_at = _autosave.get("saved_at", "unknown time")
+    src = _autosave.get("source_filename") or "unknown file"
+    st.warning(f"Unsaved session found — **{src}**, last saved {saved_at}")
+    _rb_col, _db_col = st.columns(2)
+    if _rb_col.button("Restore session", type="primary", use_container_width=True):
+        _df = pd.DataFrame(_autosave["subtitles"])
+        st.session_state["subtitles_df"] = _df
+        st.session_state["srt_content"] = dataframe_to_srt(_df)
+        st.session_state["srt_mode"] = True
+        st.session_state["transcription_done"] = True
+        st.session_state["translation_done"] = True
+        st.session_state["autosave_dismissed"] = True
+        _vp = _autosave.get("video_path", "")
+        if _vp and os.path.isfile(_vp):
+            if st.session_state["temp_dir"] is None:
+                st.session_state["temp_dir"] = tempfile.mkdtemp(prefix="subtitle_tool_")
+            st.session_state["uploaded_video_path"] = _vp
+        _clear_editor_state()
+        st.rerun()
+    if _db_col.button("Discard", use_container_width=True):
+        clear_session()
+        st.session_state["autosave_dismissed"] = True
+        st.rerun()
+    st.divider()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 1 — Input (video or existing SRT)
@@ -151,6 +183,7 @@ with tab_video:
 
 # ── Tab B: load an existing SRT file ─────────────────────────────────────────
 with tab_srt:
+    st.caption("Max file size: 5 MB")
     uploaded_srt = st.file_uploader(
         "Choose an SRT file",
         type=["srt"],
@@ -159,24 +192,28 @@ with tab_srt:
     )
 
     if uploaded_srt and st.session_state.get("loaded_srt_name") != uploaded_srt.name:
-        try:
-            srt_text = uploaded_srt.read().decode("utf-8")
-            df = parse_srt_to_dataframe(srt_text)
-            if df.empty:
-                st.error("The SRT file appears to be empty or could not be parsed.")
-            else:
-                if st.session_state["temp_dir"] is None:
-                    st.session_state["temp_dir"] = tempfile.mkdtemp(prefix="subtitle_tool_")
-                st.session_state["subtitles_df"] = df
-                st.session_state["srt_content"] = srt_text
-                st.session_state["translation_done"] = True
-                st.session_state["transcription_done"] = True
-                st.session_state["srt_mode"] = True
-                st.session_state["loaded_srt_name"] = uploaded_srt.name
-                _clear_editor_state()
-                st.rerun()
-        except Exception as e:
-            st.error(f"Failed to parse SRT file: {e}")
+        if uploaded_srt.size > 5 * 1024 * 1024:
+            st.error(f"'{uploaded_srt.name}' is {uploaded_srt.size / 1024 / 1024:.1f} MB — SRT files must be under 5 MB.")
+        else:
+            try:
+                srt_text = uploaded_srt.read().decode("utf-8")
+                df = parse_srt_to_dataframe(srt_text)
+                if df.empty:
+                    st.error("The SRT file appears to be empty or could not be parsed.")
+                else:
+                    if st.session_state["temp_dir"] is None:
+                        st.session_state["temp_dir"] = tempfile.mkdtemp(prefix="subtitle_tool_")
+                    st.session_state["subtitles_df"] = df
+                    st.session_state["srt_content"] = srt_text
+                    st.session_state["translation_done"] = True
+                    st.session_state["transcription_done"] = True
+                    st.session_state["srt_mode"] = True
+                    st.session_state["loaded_srt_name"] = uploaded_srt.name
+                    save_session(df, uploaded_srt.name, st.session_state.get("uploaded_video_path"), target_language)
+                    _clear_editor_state()
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Failed to parse SRT file: {e}")
 
     if st.session_state["srt_mode"]:
         st.success(f"SRT loaded — {len(st.session_state['subtitles_df'])} subtitles ready to edit.")
@@ -206,6 +243,7 @@ with tab_embed:
 
     with col_srt:
         st.markdown("**SRT file**")
+        st.caption("Max 5 MB")
         quick_srt = st.file_uploader(
             "SRT file",
             type=["srt"],
@@ -222,7 +260,9 @@ with tab_embed:
             key="quick_video",
         )
 
-    if quick_srt and quick_video:
+    if quick_srt and quick_srt.size > 5 * 1024 * 1024:
+        st.error(f"'{quick_srt.name}' is {quick_srt.size / 1024 / 1024:.1f} MB — SRT files must be under 5 MB.")
+    elif quick_srt and quick_video:
         ql_col_a, ql_col_b = st.columns(2)
         with ql_col_a:
             quick_primary_lang = st.selectbox(
@@ -253,6 +293,12 @@ with tab_embed:
                     key="quick_srt_2",
                 )
 
+        quick_rtl = st.checkbox(
+            "Add RTL marks (fixes Hebrew punctuation in VLC / IINA)",
+            value=(quick_primary_lang == "he"),
+            key="quick_rtl",
+        )
+
         if st.button("Embed subtitles into video", type="primary", use_container_width=True):
             if quick_add_second and not quick_srt_2:
                 st.error("Upload the second SRT file or uncheck 'Add a second subtitle track'.")
@@ -263,8 +309,11 @@ with tab_embed:
                     quick_video_path = os.path.join(quick_tmp, quick_video.name)
                     quick_output_path = os.path.join(quick_tmp, "output_embedded.mp4")
 
-                    with open(quick_srt_path, "wb") as f:
-                        f.write(quick_srt.read())
+                    quick_srt_text = quick_srt.read().decode("utf-8")
+                    if quick_rtl:
+                        quick_srt_text = apply_rtl_marks(quick_srt_text)
+                    with open(quick_srt_path, "w", encoding="utf-8") as f:
+                        f.write(quick_srt_text)
                     with open(quick_video_path, "wb") as f:
                         f.write(quick_video.getbuffer())
 
@@ -306,7 +355,7 @@ with tab_embed:
 
 # ── Tab D: merge multiple SRT files into one ──────────────────────────────────
 with tab_merge:
-    st.caption("Upload two or more SRT files. Timestamps will be auto-offset so they chain sequentially.")
+    st.caption("Upload two or more SRT files (max 5 MB each). Timestamps will be auto-offset so they chain sequentially.")
 
     merge_files = st.file_uploader(
         "Choose SRT files",
@@ -317,6 +366,10 @@ with tab_merge:
     )
 
     if merge_files:
+        oversized = [f for f in merge_files if f.size > 5 * 1024 * 1024]
+        for f in oversized:
+            st.error(f"'{f.name}' is {f.size / 1024 / 1024:.1f} MB — SRT files must be under 5 MB.")
+        merge_files = [f for f in merge_files if f not in oversized]
         st.markdown("**Merge order:**")
         for i, f in enumerate(merge_files, 1):
             st.markdown(f"{i}. {f.name}")
@@ -347,6 +400,7 @@ with tab_merge:
             st.session_state["transcription_done"] = True
             st.session_state["translation_done"] = True
             st.session_state["merge_srt_names"] = [f.name for f in merge_files]
+            save_session(merged_df, ", ".join(f.name for f in merge_files), st.session_state.get("uploaded_video_path"), target_language)
             _clear_editor_state()
             st.rerun()
         except Exception as e:
@@ -393,6 +447,7 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
                 st.session_state["source_language"] = detected_lang
                 st.session_state["transcription_done"] = True
                 st.session_state["subtitles_df"] = segments_to_dataframe(segments)
+                save_session(st.session_state["subtitles_df"], st.session_state.get("loaded_video_name"), st.session_state.get("uploaded_video_path"), target_language)
                 st.rerun()
             except MemoryError:
                 progress_bar.empty()
@@ -501,7 +556,12 @@ if st.session_state["transcription_done"] and not st.session_state["srt_mode"]:
 # STEP 4 — Edit Subtitles
 # ═══════════════════════════════════════════════════════════════════════════════
 if st.session_state["translation_done"]:
-    st.header("4. Edit Subtitles")
+    _as_meta = load_session()
+    if _as_meta:
+        st.header("4. Edit Subtitles")
+        st.caption(f"Last saved: {_as_meta['saved_at']}")
+    else:
+        st.header("4. Edit Subtitles")
     st.info(
         "**Click any cell to edit it.** "
         "You can change the subtitle text, adjust start/end timestamps (format: HH:MM:SS,mmm), "
@@ -527,150 +587,176 @@ if st.session_state["translation_done"]:
             "this is a browser limitation. The exported SRT and burned video will render correctly."
         )
 
-    df = st.session_state["subtitles_df"]
+    @st.fragment
+    def _subtitle_editor(tgt_lang: str) -> None:
+        """Isolated fragment so edits rerun only this section, preserving scroll position.
 
-    # ── Stats bar ─────────────────────────────────────────────────────────────
-    try:
-        durations = [
-            (_str_to_timedelta(str(row["end"])) - _str_to_timedelta(str(row["start"]))).total_seconds()
-            for _, row in df.iterrows()
-        ]
-        avg_duration = sum(durations) / len(durations) if durations else 0.0
-        total_duration_str = str(df["end"].iloc[-1]) if not df.empty else "—"
-        stat_col1, stat_col2, stat_col3 = st.columns(3)
-        stat_col1.metric("Subtitles", len(df))
-        stat_col2.metric("Total duration", total_duration_str)
-        stat_col3.metric("Avg on screen", f"{avg_duration:.1f}s")
-    except Exception:
-        pass  # don't let a bad timestamp break the editor
+        Key design: st.data_editor scrolls to row 1 whenever its base DataFrame
+        changes. To prevent this, we keep a stable 'editor_render_df' that is
+        only replaced by explicit button actions (Improve, Translate, Renumber,
+        Replace all). Text/timestamp edits accumulate in the widget's delta and
+        are saved to subtitles_df without changing editor_render_df, so the
+        component never gets new props and never resets its scroll position.
+        """
+        # Initialize stable render base from current subtitles on first load
+        # or after a button action reset it to None.
+        if st.session_state["editor_render_df"] is None:
+            st.session_state["editor_render_df"] = st.session_state["subtitles_df"].copy()
 
-    # ── Find & replace ────────────────────────────────────────────────────────
-    with st.expander("Find & replace"):
-        fr_col_a, fr_col_b = st.columns(2)
-        with fr_col_a:
-            fr_search = st.text_input("Find", key="fr_search", placeholder="Search text...")
-        with fr_col_b:
-            fr_replace = st.text_input("Replace with", key="fr_replace", placeholder="Replacement...")
-        fr_case = st.checkbox("Case sensitive", value=False, key="fr_case")
-        if st.button("Replace all", use_container_width=True, disabled=not fr_search):
-            before = df["text"].copy()
-            new_text = df["text"].str.replace(fr_search, fr_replace, case=fr_case, regex=False)
-            count = (new_text != before).sum()
-            if count:
-                new_df = df.copy()
-                new_df["text"] = new_text
-                st.session_state["subtitles_df"] = new_df
-                _clear_editor_state()
-                st.rerun()
-            else:
-                st.info(f'No matches found for "{fr_search}".')
+        df_render = st.session_state["editor_render_df"]   # stable base → no scroll reset
+        df_saved  = st.session_state["subtitles_df"]       # latest saved state
 
-    col_left, col_mid, col_right = st.columns([3, 2, 1])
-    with col_left:
-        st.caption("Fix grammar and fluency of English subtitles using a local AI model.")
-        if st.button("Improve subtitles (grammar)", use_container_width=True):
-            try:
-                with st.spinner("Improving subtitles (downloading model on first run)..."):
-                    improved = improve_text_list(df["text"].tolist())
-                    new_df = df.copy()
-                    new_df["text"] = improved
-                    st.session_state["subtitles_df"] = new_df
-                _clear_editor_state()
-                st.rerun()
-            except Exception as e:
-                st.error(f"Improvement failed: {e}")
-    with col_mid:
-        tl_col_a, tl_col_b = st.columns(2)
-        with tl_col_a:
-            tl_src = st.selectbox(
-                "From",
-                ["en", "he"],
-                format_func=lambda x: "English" if x == "en" else "Hebrew",
-                key="tl_src",
-                label_visibility="collapsed",
-            )
-        with tl_col_b:
-            tl_tgt = st.selectbox(
-                "To",
-                ["he", "en"],
-                format_func=lambda x: "Hebrew" if x == "he" else "English",
-                key="tl_tgt",
-                label_visibility="collapsed",
-            )
-        if st.button("Translate subtitles", use_container_width=True):
-            if tl_src == tl_tgt:
-                st.warning("Source and target language are the same.")
-            else:
-                try:
-                    with st.spinner(f"Translating subtitles to {'Hebrew' if tl_tgt == 'he' else 'English'}..."):
-                        texts = df["text"].tolist()
-                        translated = translate_text_list(texts, tl_src, tl_tgt)
-                        new_df = df.copy()
-                        new_df["text"] = translated
-                        st.session_state["subtitles_df"] = new_df
-                    _clear_editor_state()
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Translation failed: {e}")
-    with col_right:
-        if st.button("Renumber subtitles"):
-            df = df.copy()
-            df["index"] = range(1, len(df) + 1)
-            st.session_state["subtitles_df"] = df
+        # ── Stats bar (computed from latest saved state) ───────────────────────
+        try:
+            durations = [
+                (_str_to_timedelta(str(row["end"])) - _str_to_timedelta(str(row["start"]))).total_seconds()
+                for _, row in df_saved.iterrows()
+            ]
+            avg_duration = sum(durations) / len(durations) if durations else 0.0
+            total_duration_str = str(df_saved["end"].iloc[-1]) if not df_saved.empty else "—"
+            stat_col1, stat_col2, stat_col3 = st.columns(3)
+            stat_col1.metric("Subtitles", len(df_saved))
+            stat_col2.metric("Total duration", total_duration_str)
+            stat_col3.metric("Avg on screen", f"{avg_duration:.1f}s")
+        except Exception:
+            pass
+
+        def _reset_editor(new_df):
+            """Replace the stable render base and clear the delta (used by buttons)."""
+            st.session_state["subtitles_df"] = new_df
+            st.session_state["editor_render_df"] = None  # re-init on next rerun
             _clear_editor_state()
             st.rerun()
 
-    edited_df = st.data_editor(
-        df,
-        use_container_width=True,
-        num_rows="dynamic",
-        column_config={
-            "index": st.column_config.NumberColumn(
-                "No.",
-                min_value=1,
-                step=1,
-                width="small",
-            ),
-            "start": st.column_config.TextColumn(
-                "Start",
-                width="medium",
-                help="Format: HH:MM:SS,mmm",
-                validate=r"^\d{2}:\d{2}:\d{2},\d{3}$",
-            ),
-            "end": st.column_config.TextColumn(
-                "End",
-                width="medium",
-                help="Format: HH:MM:SS,mmm",
-                validate=r"^\d{2}:\d{2}:\d{2},\d{3}$",
-            ),
-            "text": st.column_config.TextColumn(
-                "Subtitle Text",
-                width="large",
-            ),
-        },
-        hide_index=True,
-        key="subtitle_editor",
-    )
+        # ── Find & replace ────────────────────────────────────────────────────
+        with st.expander("Find & replace"):
+            fr_col_a, fr_col_b = st.columns(2)
+            with fr_col_a:
+                fr_search = st.text_input("Find", key="fr_search", placeholder="Search text...")
+            with fr_col_b:
+                fr_replace = st.text_input("Replace with", key="fr_replace", placeholder="Replacement...")
+            fr_case = st.checkbox("Case sensitive", value=False, key="fr_case")
+            if st.button("Replace all", use_container_width=True, disabled=not fr_search):
+                before = df_saved["text"].copy()
+                new_text = df_saved["text"].str.replace(fr_search, fr_replace, case=fr_case, regex=False)
+                count = (new_text != before).sum()
+                if count:
+                    new_df = df_saved.copy()
+                    new_df["text"] = new_text
+                    _reset_editor(new_df)
+                else:
+                    st.info(f'No matches found for "{fr_search}".')
 
-    # Persist edits: if the user changed anything, bake the delta into session
-    # state and clear it so it isn't re-applied on the next unrelated rerun
-    # (stale deltas being re-applied is what causes the intermittent revert bug).
-    try:
-        dfs_equal = edited_df.equals(df)
-    except Exception:
-        dfs_equal = False
-    if not dfs_equal:
-        st.session_state["subtitles_df"] = edited_df
-        _clear_editor_state()
-        st.rerun()
+        col_left, col_mid, col_right = st.columns([3, 2, 1])
+        with col_left:
+            st.caption("Fix grammar and fluency of English subtitles using a local AI model.")
+            if st.button("Improve subtitles (grammar)", use_container_width=True):
+                try:
+                    with st.spinner("Improving subtitles (downloading model on first run)..."):
+                        improved = improve_text_list(df_saved["text"].tolist())
+                        new_df = df_saved.copy()
+                        new_df["text"] = improved
+                    _reset_editor(new_df)
+                except Exception as e:
+                    st.error(f"Improvement failed: {e}")
+        with col_mid:
+            tl_col_a, tl_col_b = st.columns(2)
+            with tl_col_a:
+                tl_src = st.selectbox(
+                    "From",
+                    ["en", "he"],
+                    format_func=lambda x: "English" if x == "en" else "Hebrew",
+                    key="tl_src",
+                    label_visibility="collapsed",
+                )
+            with tl_col_b:
+                tl_tgt = st.selectbox(
+                    "To",
+                    ["he", "en"],
+                    format_func=lambda x: "Hebrew" if x == "he" else "English",
+                    key="tl_tgt",
+                    label_visibility="collapsed",
+                )
+            if st.button("Translate subtitles", use_container_width=True):
+                if tl_src == tl_tgt:
+                    st.warning("Source and target language are the same.")
+                else:
+                    try:
+                        with st.spinner(f"Translating subtitles to {'Hebrew' if tl_tgt == 'he' else 'English'}..."):
+                            translated = translate_text_list(df_saved["text"].tolist(), tl_src, tl_tgt)
+                            new_df = df_saved.copy()
+                            new_df["text"] = translated
+                        _reset_editor(new_df)
+                    except Exception as e:
+                        st.error(f"Translation failed: {e}")
+        with col_right:
+            if st.button("Renumber subtitles"):
+                new_df = df_saved.copy()
+                new_df["index"] = range(1, len(new_df) + 1)
+                _reset_editor(new_df)
 
-    # Regenerate SRT from current state
-    try:
-        srt_text = dataframe_to_srt(edited_df)
-        st.session_state["srt_content"] = srt_text
-    except ValueError as e:
-        st.warning(f"SRT validation issue: {e}")
-        st.session_state["srt_content"] = None
+        # Pass the STABLE render base — same object every rerun between button
+        # actions — so the React component never reinitializes and scroll is kept.
+        edited_df = st.data_editor(
+            df_render,
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                "index": st.column_config.NumberColumn(
+                    "No.",
+                    min_value=1,
+                    step=1,
+                    width="small",
+                ),
+                "start": st.column_config.TextColumn(
+                    "Start",
+                    width="medium",
+                    help="Format: HH:MM:SS,mmm",
+                    validate=r"^\d{2}:\d{2}:\d{2},\d{3}$",
+                ),
+                "end": st.column_config.TextColumn(
+                    "End",
+                    width="medium",
+                    help="Format: HH:MM:SS,mmm",
+                    validate=r"^\d{2}:\d{2}:\d{2},\d{3}$",
+                ),
+                "text": st.column_config.TextColumn(
+                    "Subtitle Text",
+                    width="large",
+                ),
+            },
+            hide_index=True,
+            key="subtitle_editor",
+        )
+
+        # Compare edited_df (render base + accumulated delta) to df_saved
+        # to detect new changes. Save without rerouting — the stable render
+        # base means the component never gets new props, so no scroll reset.
+        try:
+            dfs_equal = edited_df.equals(df_saved)
+        except Exception:
+            dfs_equal = False
+        if not dfs_equal:
+            st.session_state["subtitles_df"] = edited_df
+            save_session(
+                edited_df,
+                source_filename=st.session_state.get("loaded_srt_name") or st.session_state.get("loaded_video_name"),
+                video_path=st.session_state.get("uploaded_video_path"),
+                target_language=tgt_lang,
+            )
+            if len(edited_df) != len(df_render):
+                # Row add/delete: delta is not idempotent, must reset
+                _reset_editor(edited_df)
+
+        # Regenerate SRT from current state
+        try:
+            srt_text = dataframe_to_srt(edited_df)
+            st.session_state["srt_content"] = srt_text
+        except ValueError as e:
+            st.warning(f"SRT validation issue: {e}")
+            st.session_state["srt_content"] = None
+
+    _subtitle_editor(target_language)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 5 — Export
@@ -685,9 +771,18 @@ if st.session_state["translation_done"]:
         st.subheader("Download SRT file")
         st.caption("Import this .srt file into any video player (VLC, IINA, etc.).")
         if st.session_state["srt_content"]:
+            add_rtl = st.checkbox(
+                "Add RTL marks (fixes Hebrew punctuation in VLC / IINA)",
+                value=(target_language == "he"),
+            )
+            srt_download_content = (
+                apply_rtl_marks(st.session_state["srt_content"])
+                if add_rtl
+                else st.session_state["srt_content"]
+            )
             st.download_button(
                 label="Download .srt",
-                data=st.session_state["srt_content"].encode("utf-8"),
+                data=srt_download_content.encode("utf-8"),
                 file_name="subtitles.srt",
                 mime="text/plain",
                 use_container_width=True,
@@ -722,6 +817,12 @@ if st.session_state["translation_done"]:
                 key="embed_primary_lang",
             )
 
+            embed_rtl = st.checkbox(
+                "Add RTL marks (fixes Hebrew punctuation in VLC / IINA)",
+                value=(primary_lang == "he"),
+                key="embed_rtl",
+            )
+
             add_second_track = st.checkbox("Add a second subtitle track", key="embed_add_second")
             second_srt_content = None
             second_lang = None
@@ -753,8 +854,13 @@ if st.session_state["translation_done"]:
                     srt_path = os.path.join(tmp_dir, "subtitles.srt")
                     output_path = os.path.join(tmp_dir, "output_embedded.mp4")
 
+                    srt_to_embed = (
+                        apply_rtl_marks(st.session_state["srt_content"])
+                        if embed_rtl
+                        else st.session_state["srt_content"]
+                    )
                     with open(srt_path, "w", encoding="utf-8") as f:
-                        f.write(st.session_state["srt_content"])
+                        f.write(srt_to_embed)
 
                     with st.spinner("Embedding subtitles with FFmpeg..."):
                         try:
