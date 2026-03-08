@@ -41,6 +41,7 @@ STATE_DEFAULTS: dict = {
     "loaded_video_name": None,  # Filename of last uploaded video, to detect new uploads
     "merge_srt_names": [],      # List of filenames from last merge, to detect new uploads
     "autosave_dismissed": False, # True once user has responded to the restore banner this session
+    "editor_render_df": None,    # Stable base passed to st.data_editor; only reset by button actions
 }
 
 for key, default in STATE_DEFAULTS.items():
@@ -568,23 +569,44 @@ if st.session_state["translation_done"]:
 
     @st.fragment
     def _subtitle_editor(tgt_lang: str) -> None:
-        """Isolated fragment so edits rerun only this section, preserving scroll position."""
-        df = st.session_state["subtitles_df"]
+        """Isolated fragment so edits rerun only this section, preserving scroll position.
 
-        # ── Stats bar ─────────────────────────────────────────────────────────
+        Key design: st.data_editor scrolls to row 1 whenever its base DataFrame
+        changes. To prevent this, we keep a stable 'editor_render_df' that is
+        only replaced by explicit button actions (Improve, Translate, Renumber,
+        Replace all). Text/timestamp edits accumulate in the widget's delta and
+        are saved to subtitles_df without changing editor_render_df, so the
+        component never gets new props and never resets its scroll position.
+        """
+        # Initialize stable render base from current subtitles on first load
+        # or after a button action reset it to None.
+        if st.session_state["editor_render_df"] is None:
+            st.session_state["editor_render_df"] = st.session_state["subtitles_df"].copy()
+
+        df_render = st.session_state["editor_render_df"]   # stable base → no scroll reset
+        df_saved  = st.session_state["subtitles_df"]       # latest saved state
+
+        # ── Stats bar (computed from latest saved state) ───────────────────────
         try:
             durations = [
                 (_str_to_timedelta(str(row["end"])) - _str_to_timedelta(str(row["start"]))).total_seconds()
-                for _, row in df.iterrows()
+                for _, row in df_saved.iterrows()
             ]
             avg_duration = sum(durations) / len(durations) if durations else 0.0
-            total_duration_str = str(df["end"].iloc[-1]) if not df.empty else "—"
+            total_duration_str = str(df_saved["end"].iloc[-1]) if not df_saved.empty else "—"
             stat_col1, stat_col2, stat_col3 = st.columns(3)
-            stat_col1.metric("Subtitles", len(df))
+            stat_col1.metric("Subtitles", len(df_saved))
             stat_col2.metric("Total duration", total_duration_str)
             stat_col3.metric("Avg on screen", f"{avg_duration:.1f}s")
         except Exception:
             pass
+
+        def _reset_editor(new_df):
+            """Replace the stable render base and clear the delta (used by buttons)."""
+            st.session_state["subtitles_df"] = new_df
+            st.session_state["editor_render_df"] = None  # re-init on next rerun
+            _clear_editor_state()
+            st.rerun()
 
         # ── Find & replace ────────────────────────────────────────────────────
         with st.expander("Find & replace"):
@@ -595,15 +617,13 @@ if st.session_state["translation_done"]:
                 fr_replace = st.text_input("Replace with", key="fr_replace", placeholder="Replacement...")
             fr_case = st.checkbox("Case sensitive", value=False, key="fr_case")
             if st.button("Replace all", use_container_width=True, disabled=not fr_search):
-                before = df["text"].copy()
-                new_text = df["text"].str.replace(fr_search, fr_replace, case=fr_case, regex=False)
+                before = df_saved["text"].copy()
+                new_text = df_saved["text"].str.replace(fr_search, fr_replace, case=fr_case, regex=False)
                 count = (new_text != before).sum()
                 if count:
-                    new_df = df.copy()
+                    new_df = df_saved.copy()
                     new_df["text"] = new_text
-                    st.session_state["subtitles_df"] = new_df
-                    _clear_editor_state()
-                    st.rerun()
+                    _reset_editor(new_df)
                 else:
                     st.info(f'No matches found for "{fr_search}".')
 
@@ -613,12 +633,10 @@ if st.session_state["translation_done"]:
             if st.button("Improve subtitles (grammar)", use_container_width=True):
                 try:
                     with st.spinner("Improving subtitles (downloading model on first run)..."):
-                        improved = improve_text_list(df["text"].tolist())
-                        new_df = df.copy()
+                        improved = improve_text_list(df_saved["text"].tolist())
+                        new_df = df_saved.copy()
                         new_df["text"] = improved
-                        st.session_state["subtitles_df"] = new_df
-                    _clear_editor_state()
-                    st.rerun()
+                    _reset_editor(new_df)
                 except Exception as e:
                     st.error(f"Improvement failed: {e}")
         with col_mid:
@@ -645,25 +663,22 @@ if st.session_state["translation_done"]:
                 else:
                     try:
                         with st.spinner(f"Translating subtitles to {'Hebrew' if tl_tgt == 'he' else 'English'}..."):
-                            texts = df["text"].tolist()
-                            translated = translate_text_list(texts, tl_src, tl_tgt)
-                            new_df = df.copy()
+                            translated = translate_text_list(df_saved["text"].tolist(), tl_src, tl_tgt)
+                            new_df = df_saved.copy()
                             new_df["text"] = translated
-                            st.session_state["subtitles_df"] = new_df
-                        _clear_editor_state()
-                        st.rerun()
+                        _reset_editor(new_df)
                     except Exception as e:
                         st.error(f"Translation failed: {e}")
         with col_right:
             if st.button("Renumber subtitles"):
-                df = df.copy()
-                df["index"] = range(1, len(df) + 1)
-                st.session_state["subtitles_df"] = df
-                _clear_editor_state()
-                st.rerun()
+                new_df = df_saved.copy()
+                new_df["index"] = range(1, len(new_df) + 1)
+                _reset_editor(new_df)
 
+        # Pass the STABLE render base — same object every rerun between button
+        # actions — so the React component never reinitializes and scroll is kept.
         edited_df = st.data_editor(
-            df,
+            df_render,
             use_container_width=True,
             num_rows="dynamic",
             column_config={
@@ -694,16 +709,11 @@ if st.session_state["translation_done"]:
             key="subtitle_editor",
         )
 
-        # Persist edits.
-        # Any rerun — even fragment-scoped — causes the data editor React
-        # component to reinitialize and scroll back to row 1. So for
-        # text/timestamp edits we write to session state and do nothing else.
-        # The delta is idempotent for value changes so no stale-delta revert
-        # can occur on the next natural rerun.
-        # Row add/delete deltas are NOT idempotent (they'd duplicate/drop rows)
-        # so those still require a clear + full rerun.
+        # Compare edited_df (render base + accumulated delta) to df_saved
+        # to detect new changes. Save without rerouting — the stable render
+        # base means the component never gets new props, so no scroll reset.
         try:
-            dfs_equal = edited_df.equals(df)
+            dfs_equal = edited_df.equals(df_saved)
         except Exception:
             dfs_equal = False
         if not dfs_equal:
@@ -714,9 +724,9 @@ if st.session_state["translation_done"]:
                 video_path=st.session_state.get("uploaded_video_path"),
                 target_language=tgt_lang,
             )
-            if len(edited_df) != len(df):
-                _clear_editor_state()
-                st.rerun()
+            if len(edited_df) != len(df_render):
+                # Row add/delete: delta is not idempotent, must reset
+                _reset_editor(edited_df)
 
         # Regenerate SRT from current state
         try:
