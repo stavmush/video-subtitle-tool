@@ -18,7 +18,7 @@ import streamlit as st
 
 from utils.autosave import clear_session, load_session, save_session
 from utils.improve import improve_text_list
-from utils.srt_utils import _str_to_timedelta, dataframe_to_srt, merge_srt_dataframes, parse_srt_to_dataframe, segments_to_dataframe
+from utils.srt_utils import _str_to_timedelta, apply_rtl_marks, dataframe_to_srt, merge_srt_dataframes, parse_srt_to_dataframe, segments_to_dataframe
 from utils.transcribe import transcribe_to_english, transcribe_video
 from utils.translate import translate_segments, translate_text_list
 from utils.video import burn_subtitles, embed_subtitles, embed_subtitles_multi
@@ -751,9 +751,18 @@ if st.session_state["translation_done"]:
         st.subheader("Download SRT file")
         st.caption("Import this .srt file into any video player (VLC, IINA, etc.).")
         if st.session_state["srt_content"]:
+            add_rtl = st.checkbox(
+                "Add RTL marks (fixes Hebrew punctuation in VLC / IINA)",
+                value=(target_language == "he"),
+            )
+            srt_download_content = (
+                apply_rtl_marks(st.session_state["srt_content"])
+                if add_rtl
+                else st.session_state["srt_content"]
+            )
             st.download_button(
                 label="Download .srt",
-                data=st.session_state["srt_content"].encode("utf-8"),
+                data=srt_download_content.encode("utf-8"),
                 file_name="subtitles.srt",
                 mime="text/plain",
                 use_container_width=True,
