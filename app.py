@@ -183,6 +183,7 @@ with tab_video:
 
 # ── Tab B: load an existing SRT file ─────────────────────────────────────────
 with tab_srt:
+    st.caption("Max file size: 5 MB")
     uploaded_srt = st.file_uploader(
         "Choose an SRT file",
         type=["srt"],
@@ -191,25 +192,28 @@ with tab_srt:
     )
 
     if uploaded_srt and st.session_state.get("loaded_srt_name") != uploaded_srt.name:
-        try:
-            srt_text = uploaded_srt.read().decode("utf-8")
-            df = parse_srt_to_dataframe(srt_text)
-            if df.empty:
-                st.error("The SRT file appears to be empty or could not be parsed.")
-            else:
-                if st.session_state["temp_dir"] is None:
-                    st.session_state["temp_dir"] = tempfile.mkdtemp(prefix="subtitle_tool_")
-                st.session_state["subtitles_df"] = df
-                st.session_state["srt_content"] = srt_text
-                st.session_state["translation_done"] = True
-                st.session_state["transcription_done"] = True
-                st.session_state["srt_mode"] = True
-                st.session_state["loaded_srt_name"] = uploaded_srt.name
-                save_session(df, uploaded_srt.name, st.session_state.get("uploaded_video_path"), target_language)
-                _clear_editor_state()
-                st.rerun()
-        except Exception as e:
-            st.error(f"Failed to parse SRT file: {e}")
+        if uploaded_srt.size > 5 * 1024 * 1024:
+            st.error(f"'{uploaded_srt.name}' is {uploaded_srt.size / 1024 / 1024:.1f} MB — SRT files must be under 5 MB.")
+        else:
+            try:
+                srt_text = uploaded_srt.read().decode("utf-8")
+                df = parse_srt_to_dataframe(srt_text)
+                if df.empty:
+                    st.error("The SRT file appears to be empty or could not be parsed.")
+                else:
+                    if st.session_state["temp_dir"] is None:
+                        st.session_state["temp_dir"] = tempfile.mkdtemp(prefix="subtitle_tool_")
+                    st.session_state["subtitles_df"] = df
+                    st.session_state["srt_content"] = srt_text
+                    st.session_state["translation_done"] = True
+                    st.session_state["transcription_done"] = True
+                    st.session_state["srt_mode"] = True
+                    st.session_state["loaded_srt_name"] = uploaded_srt.name
+                    save_session(df, uploaded_srt.name, st.session_state.get("uploaded_video_path"), target_language)
+                    _clear_editor_state()
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Failed to parse SRT file: {e}")
 
     if st.session_state["srt_mode"]:
         st.success(f"SRT loaded — {len(st.session_state['subtitles_df'])} subtitles ready to edit.")
@@ -239,6 +243,7 @@ with tab_embed:
 
     with col_srt:
         st.markdown("**SRT file**")
+        st.caption("Max 5 MB")
         quick_srt = st.file_uploader(
             "SRT file",
             type=["srt"],
@@ -255,7 +260,9 @@ with tab_embed:
             key="quick_video",
         )
 
-    if quick_srt and quick_video:
+    if quick_srt and quick_srt.size > 5 * 1024 * 1024:
+        st.error(f"'{quick_srt.name}' is {quick_srt.size / 1024 / 1024:.1f} MB — SRT files must be under 5 MB.")
+    elif quick_srt and quick_video:
         ql_col_a, ql_col_b = st.columns(2)
         with ql_col_a:
             quick_primary_lang = st.selectbox(
@@ -339,7 +346,7 @@ with tab_embed:
 
 # ── Tab D: merge multiple SRT files into one ──────────────────────────────────
 with tab_merge:
-    st.caption("Upload two or more SRT files. Timestamps will be auto-offset so they chain sequentially.")
+    st.caption("Upload two or more SRT files (max 5 MB each). Timestamps will be auto-offset so they chain sequentially.")
 
     merge_files = st.file_uploader(
         "Choose SRT files",
@@ -350,6 +357,10 @@ with tab_merge:
     )
 
     if merge_files:
+        oversized = [f for f in merge_files if f.size > 5 * 1024 * 1024]
+        for f in oversized:
+            st.error(f"'{f.name}' is {f.size / 1024 / 1024:.1f} MB — SRT files must be under 5 MB.")
+        merge_files = [f for f in merge_files if f not in oversized]
         st.markdown("**Merge order:**")
         for i, f in enumerate(merge_files, 1):
             st.markdown(f"{i}. {f.name}")
