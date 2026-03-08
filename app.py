@@ -293,6 +293,12 @@ with tab_embed:
                     key="quick_srt_2",
                 )
 
+        quick_rtl = st.checkbox(
+            "Add RTL marks (fixes Hebrew punctuation in VLC / IINA)",
+            value=(quick_primary_lang == "he"),
+            key="quick_rtl",
+        )
+
         if st.button("Embed subtitles into video", type="primary", use_container_width=True):
             if quick_add_second and not quick_srt_2:
                 st.error("Upload the second SRT file or uncheck 'Add a second subtitle track'.")
@@ -303,8 +309,11 @@ with tab_embed:
                     quick_video_path = os.path.join(quick_tmp, quick_video.name)
                     quick_output_path = os.path.join(quick_tmp, "output_embedded.mp4")
 
-                    with open(quick_srt_path, "wb") as f:
-                        f.write(quick_srt.read())
+                    quick_srt_text = quick_srt.read().decode("utf-8")
+                    if quick_rtl:
+                        quick_srt_text = apply_rtl_marks(quick_srt_text)
+                    with open(quick_srt_path, "w", encoding="utf-8") as f:
+                        f.write(quick_srt_text)
                     with open(quick_video_path, "wb") as f:
                         f.write(quick_video.getbuffer())
 
@@ -808,6 +817,12 @@ if st.session_state["translation_done"]:
                 key="embed_primary_lang",
             )
 
+            embed_rtl = st.checkbox(
+                "Add RTL marks (fixes Hebrew punctuation in VLC / IINA)",
+                value=(primary_lang == "he"),
+                key="embed_rtl",
+            )
+
             add_second_track = st.checkbox("Add a second subtitle track", key="embed_add_second")
             second_srt_content = None
             second_lang = None
@@ -839,8 +854,13 @@ if st.session_state["translation_done"]:
                     srt_path = os.path.join(tmp_dir, "subtitles.srt")
                     output_path = os.path.join(tmp_dir, "output_embedded.mp4")
 
+                    srt_to_embed = (
+                        apply_rtl_marks(st.session_state["srt_content"])
+                        if embed_rtl
+                        else st.session_state["srt_content"]
+                    )
                     with open(srt_path, "w", encoding="utf-8") as f:
-                        f.write(st.session_state["srt_content"])
+                        f.write(srt_to_embed)
 
                     with st.spinner("Embedding subtitles with FFmpeg..."):
                         try:
