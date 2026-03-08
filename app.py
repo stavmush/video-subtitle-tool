@@ -694,9 +694,14 @@ if st.session_state["translation_done"]:
             key="subtitle_editor",
         )
 
-        # Persist edits: commit the delta and fragment-rerun so the edit is
-        # reliably baked in. Fragment reruns only re-render this section,
-        # so scroll position is preserved.
+        # Persist edits.
+        # For text/timestamp edits: save and fragment-rerun WITHOUT clearing
+        # editor state. The delta is idempotent (re-applying "row N = X" when
+        # row N is already X has no effect), so leaving it in place is safe.
+        # Clearing it would cause the React component to reinitialize and
+        # scroll back to the top — exactly the bug we're fixing.
+        # For row add/delete: the delta is NOT idempotent (it would add/delete
+        # again), so we must clear it and do a full rerun.
         try:
             dfs_equal = edited_df.equals(df)
         except Exception:
@@ -709,8 +714,14 @@ if st.session_state["translation_done"]:
                 video_path=st.session_state.get("uploaded_video_path"),
                 target_language=tgt_lang,
             )
-            _clear_editor_state()
-            st.rerun(scope="fragment")
+            if len(edited_df) != len(df):
+                # Structural change — clear delta to prevent double add/delete
+                _clear_editor_state()
+                st.rerun()
+            else:
+                # Text/timestamp edit — fragment rerun, keep editor state to
+                # preserve scroll position
+                st.rerun(scope="fragment")
 
         # Regenerate SRT from current state
         try:
