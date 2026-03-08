@@ -691,9 +691,11 @@ if st.session_state["translation_done"]:
         key="subtitle_editor",
     )
 
-    # Persist edits: if the user changed anything, bake the delta into session
-    # state and clear it so it isn't re-applied on the next unrelated rerun
-    # (stale deltas being re-applied is what causes the intermittent revert bug).
+    # Persist edits and autosave.
+    # - Text/timestamp edits: save silently, no rerun (avoids scroll-to-top).
+    # - Row additions/deletions: clear the stale delta and rerun — necessary
+    #   because accumulated add/delete deltas would be re-applied on the next
+    #   pass and duplicate or drop rows if not cleared.
     try:
         dfs_equal = edited_df.equals(df)
     except Exception:
@@ -706,8 +708,9 @@ if st.session_state["translation_done"]:
             video_path=st.session_state.get("uploaded_video_path"),
             target_language=target_language,
         )
-        _clear_editor_state()
-        st.rerun()
+        if len(edited_df) != len(df):
+            _clear_editor_state()
+            st.rerun()
 
     # Regenerate SRT from current state
     try:
