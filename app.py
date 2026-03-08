@@ -566,159 +566,161 @@ if st.session_state["translation_done"]:
             "this is a browser limitation. The exported SRT and burned video will render correctly."
         )
 
-    df = st.session_state["subtitles_df"]
+    @st.fragment
+    def _subtitle_editor(tgt_lang: str) -> None:
+        """Isolated fragment so edits rerun only this section, preserving scroll position."""
+        df = st.session_state["subtitles_df"]
 
-    # ── Stats bar ─────────────────────────────────────────────────────────────
-    try:
-        durations = [
-            (_str_to_timedelta(str(row["end"])) - _str_to_timedelta(str(row["start"]))).total_seconds()
-            for _, row in df.iterrows()
-        ]
-        avg_duration = sum(durations) / len(durations) if durations else 0.0
-        total_duration_str = str(df["end"].iloc[-1]) if not df.empty else "—"
-        stat_col1, stat_col2, stat_col3 = st.columns(3)
-        stat_col1.metric("Subtitles", len(df))
-        stat_col2.metric("Total duration", total_duration_str)
-        stat_col3.metric("Avg on screen", f"{avg_duration:.1f}s")
-    except Exception:
-        pass  # don't let a bad timestamp break the editor
+        # ── Stats bar ─────────────────────────────────────────────────────────
+        try:
+            durations = [
+                (_str_to_timedelta(str(row["end"])) - _str_to_timedelta(str(row["start"]))).total_seconds()
+                for _, row in df.iterrows()
+            ]
+            avg_duration = sum(durations) / len(durations) if durations else 0.0
+            total_duration_str = str(df["end"].iloc[-1]) if not df.empty else "—"
+            stat_col1, stat_col2, stat_col3 = st.columns(3)
+            stat_col1.metric("Subtitles", len(df))
+            stat_col2.metric("Total duration", total_duration_str)
+            stat_col3.metric("Avg on screen", f"{avg_duration:.1f}s")
+        except Exception:
+            pass
 
-    # ── Find & replace ────────────────────────────────────────────────────────
-    with st.expander("Find & replace"):
-        fr_col_a, fr_col_b = st.columns(2)
-        with fr_col_a:
-            fr_search = st.text_input("Find", key="fr_search", placeholder="Search text...")
-        with fr_col_b:
-            fr_replace = st.text_input("Replace with", key="fr_replace", placeholder="Replacement...")
-        fr_case = st.checkbox("Case sensitive", value=False, key="fr_case")
-        if st.button("Replace all", use_container_width=True, disabled=not fr_search):
-            before = df["text"].copy()
-            new_text = df["text"].str.replace(fr_search, fr_replace, case=fr_case, regex=False)
-            count = (new_text != before).sum()
-            if count:
-                new_df = df.copy()
-                new_df["text"] = new_text
-                st.session_state["subtitles_df"] = new_df
-                _clear_editor_state()
-                st.rerun()
-            else:
-                st.info(f'No matches found for "{fr_search}".')
-
-    col_left, col_mid, col_right = st.columns([3, 2, 1])
-    with col_left:
-        st.caption("Fix grammar and fluency of English subtitles using a local AI model.")
-        if st.button("Improve subtitles (grammar)", use_container_width=True):
-            try:
-                with st.spinner("Improving subtitles (downloading model on first run)..."):
-                    improved = improve_text_list(df["text"].tolist())
+        # ── Find & replace ────────────────────────────────────────────────────
+        with st.expander("Find & replace"):
+            fr_col_a, fr_col_b = st.columns(2)
+            with fr_col_a:
+                fr_search = st.text_input("Find", key="fr_search", placeholder="Search text...")
+            with fr_col_b:
+                fr_replace = st.text_input("Replace with", key="fr_replace", placeholder="Replacement...")
+            fr_case = st.checkbox("Case sensitive", value=False, key="fr_case")
+            if st.button("Replace all", use_container_width=True, disabled=not fr_search):
+                before = df["text"].copy()
+                new_text = df["text"].str.replace(fr_search, fr_replace, case=fr_case, regex=False)
+                count = (new_text != before).sum()
+                if count:
                     new_df = df.copy()
-                    new_df["text"] = improved
+                    new_df["text"] = new_text
                     st.session_state["subtitles_df"] = new_df
-                _clear_editor_state()
-                st.rerun()
-            except Exception as e:
-                st.error(f"Improvement failed: {e}")
-    with col_mid:
-        tl_col_a, tl_col_b = st.columns(2)
-        with tl_col_a:
-            tl_src = st.selectbox(
-                "From",
-                ["en", "he"],
-                format_func=lambda x: "English" if x == "en" else "Hebrew",
-                key="tl_src",
-                label_visibility="collapsed",
-            )
-        with tl_col_b:
-            tl_tgt = st.selectbox(
-                "To",
-                ["he", "en"],
-                format_func=lambda x: "Hebrew" if x == "he" else "English",
-                key="tl_tgt",
-                label_visibility="collapsed",
-            )
-        if st.button("Translate subtitles", use_container_width=True):
-            if tl_src == tl_tgt:
-                st.warning("Source and target language are the same.")
-            else:
+                    _clear_editor_state()
+                    st.rerun()
+                else:
+                    st.info(f'No matches found for "{fr_search}".')
+
+        col_left, col_mid, col_right = st.columns([3, 2, 1])
+        with col_left:
+            st.caption("Fix grammar and fluency of English subtitles using a local AI model.")
+            if st.button("Improve subtitles (grammar)", use_container_width=True):
                 try:
-                    with st.spinner(f"Translating subtitles to {'Hebrew' if tl_tgt == 'he' else 'English'}..."):
-                        texts = df["text"].tolist()
-                        translated = translate_text_list(texts, tl_src, tl_tgt)
+                    with st.spinner("Improving subtitles (downloading model on first run)..."):
+                        improved = improve_text_list(df["text"].tolist())
                         new_df = df.copy()
-                        new_df["text"] = translated
+                        new_df["text"] = improved
                         st.session_state["subtitles_df"] = new_df
                     _clear_editor_state()
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Translation failed: {e}")
-    with col_right:
-        if st.button("Renumber subtitles"):
-            df = df.copy()
-            df["index"] = range(1, len(df) + 1)
-            st.session_state["subtitles_df"] = df
-            _clear_editor_state()
-            st.rerun()
+                    st.error(f"Improvement failed: {e}")
+        with col_mid:
+            tl_col_a, tl_col_b = st.columns(2)
+            with tl_col_a:
+                tl_src = st.selectbox(
+                    "From",
+                    ["en", "he"],
+                    format_func=lambda x: "English" if x == "en" else "Hebrew",
+                    key="tl_src",
+                    label_visibility="collapsed",
+                )
+            with tl_col_b:
+                tl_tgt = st.selectbox(
+                    "To",
+                    ["he", "en"],
+                    format_func=lambda x: "Hebrew" if x == "he" else "English",
+                    key="tl_tgt",
+                    label_visibility="collapsed",
+                )
+            if st.button("Translate subtitles", use_container_width=True):
+                if tl_src == tl_tgt:
+                    st.warning("Source and target language are the same.")
+                else:
+                    try:
+                        with st.spinner(f"Translating subtitles to {'Hebrew' if tl_tgt == 'he' else 'English'}..."):
+                            texts = df["text"].tolist()
+                            translated = translate_text_list(texts, tl_src, tl_tgt)
+                            new_df = df.copy()
+                            new_df["text"] = translated
+                            st.session_state["subtitles_df"] = new_df
+                        _clear_editor_state()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Translation failed: {e}")
+        with col_right:
+            if st.button("Renumber subtitles"):
+                df = df.copy()
+                df["index"] = range(1, len(df) + 1)
+                st.session_state["subtitles_df"] = df
+                _clear_editor_state()
+                st.rerun()
 
-    edited_df = st.data_editor(
-        df,
-        use_container_width=True,
-        num_rows="dynamic",
-        column_config={
-            "index": st.column_config.NumberColumn(
-                "No.",
-                min_value=1,
-                step=1,
-                width="small",
-            ),
-            "start": st.column_config.TextColumn(
-                "Start",
-                width="medium",
-                help="Format: HH:MM:SS,mmm",
-                validate=r"^\d{2}:\d{2}:\d{2},\d{3}$",
-            ),
-            "end": st.column_config.TextColumn(
-                "End",
-                width="medium",
-                help="Format: HH:MM:SS,mmm",
-                validate=r"^\d{2}:\d{2}:\d{2},\d{3}$",
-            ),
-            "text": st.column_config.TextColumn(
-                "Subtitle Text",
-                width="large",
-            ),
-        },
-        hide_index=True,
-        key="subtitle_editor",
-    )
-
-    # Persist edits and autosave.
-    # - Text/timestamp edits: save silently, no rerun (avoids scroll-to-top).
-    # - Row additions/deletions: clear the stale delta and rerun — necessary
-    #   because accumulated add/delete deltas would be re-applied on the next
-    #   pass and duplicate or drop rows if not cleared.
-    try:
-        dfs_equal = edited_df.equals(df)
-    except Exception:
-        dfs_equal = False
-    if not dfs_equal:
-        st.session_state["subtitles_df"] = edited_df
-        save_session(
-            edited_df,
-            source_filename=st.session_state.get("loaded_srt_name") or st.session_state.get("loaded_video_name"),
-            video_path=st.session_state.get("uploaded_video_path"),
-            target_language=target_language,
+        edited_df = st.data_editor(
+            df,
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                "index": st.column_config.NumberColumn(
+                    "No.",
+                    min_value=1,
+                    step=1,
+                    width="small",
+                ),
+                "start": st.column_config.TextColumn(
+                    "Start",
+                    width="medium",
+                    help="Format: HH:MM:SS,mmm",
+                    validate=r"^\d{2}:\d{2}:\d{2},\d{3}$",
+                ),
+                "end": st.column_config.TextColumn(
+                    "End",
+                    width="medium",
+                    help="Format: HH:MM:SS,mmm",
+                    validate=r"^\d{2}:\d{2}:\d{2},\d{3}$",
+                ),
+                "text": st.column_config.TextColumn(
+                    "Subtitle Text",
+                    width="large",
+                ),
+            },
+            hide_index=True,
+            key="subtitle_editor",
         )
-        if len(edited_df) != len(df):
-            _clear_editor_state()
-            st.rerun()
 
-    # Regenerate SRT from current state
-    try:
-        srt_text = dataframe_to_srt(edited_df)
-        st.session_state["srt_content"] = srt_text
-    except ValueError as e:
-        st.warning(f"SRT validation issue: {e}")
-        st.session_state["srt_content"] = None
+        # Persist edits: commit the delta and fragment-rerun so the edit is
+        # reliably baked in. Fragment reruns only re-render this section,
+        # so scroll position is preserved.
+        try:
+            dfs_equal = edited_df.equals(df)
+        except Exception:
+            dfs_equal = False
+        if not dfs_equal:
+            st.session_state["subtitles_df"] = edited_df
+            save_session(
+                edited_df,
+                source_filename=st.session_state.get("loaded_srt_name") or st.session_state.get("loaded_video_name"),
+                video_path=st.session_state.get("uploaded_video_path"),
+                target_language=tgt_lang,
+            )
+            _clear_editor_state()
+            st.rerun(scope="fragment")
+
+        # Regenerate SRT from current state
+        try:
+            srt_text = dataframe_to_srt(edited_df)
+            st.session_state["srt_content"] = srt_text
+        except ValueError as e:
+            st.warning(f"SRT validation issue: {e}")
+            st.session_state["srt_content"] = None
+
+    _subtitle_editor(target_language)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 5 — Export
