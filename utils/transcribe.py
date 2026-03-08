@@ -6,61 +6,80 @@ Advantages over openai-whisper:
   - ~2-4x faster on CPU
   - Native segment-level progress callbacks (no tqdm patching needed)
   - Medium model uses ~770MB instead of 1.5GB
+
+Memory strategy for large files:
+  Audio is processed in 10-minute chunks extracted directly from the
+  video. Each chunk is ~50 MB in memory vs ~460 MB for a full 2-hour
+  WAV. The model stays loaded across chunks; gc.collect() runs between
+  them to release intermediate allocations.
 """
 
 import gc
+import json
 import os
 import subprocess
 import tempfile
+from typing import Any, Callable
 
 import streamlit as st
 from faster_whisper import WhisperModel
-from typing import Any, Callable
 
 Segment = dict[str, Any]
 
-# Large models use more memory during beam search; lower beam_size keeps
-# quality high while cutting inference time ~30-40% on CPU.
+# 10-minute chunks keep peak audio memory ~50 MB regardless of video length.
+_CHUNK_SECONDS = 600
+
+# beam_size=1 (greedy) for large models: ~20% faster, meaningfully less
+# decoder memory. Accuracy is still excellent at that model size.
 _BEAM_SIZE: dict[str, int] = {
     "tiny":     5,
     "base":     5,
     "small":    5,
-    "medium":   5,
-    "large-v2": 2,
-    "large-v3": 2,
+    "medium":   4,
+    "large-v2": 1,
+    "large-v3": 1,
 }
 
 
 @st.cache_resource(show_spinner=False)
 def _load_model(model_size: str) -> WhisperModel:
-    """
-    Download (first run) and cache the faster-whisper model.
-    Uses int8 quantization on CPU for minimal RAM usage.
-    compute_type="int8" halves memory vs float32 with negligible accuracy loss.
-    """
-    gc.collect()  # free any lingering objects before allocating the model
+    """Download (first run) and cache the faster-whisper model."""
+    gc.collect()
     return WhisperModel(model_size, device="cpu", compute_type="int8")
 
 
-def _extract_audio(video_path: str) -> str:
-    """
-    Extract audio from video to a temporary 16 kHz mono WAV file.
-    Returns the temp file path — caller is responsible for deleting it.
+def _get_duration(video_path: str) -> float:
+    """Return video/audio duration in seconds via ffprobe."""
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "quiet",
+            "-print_format", "json",
+            "-show_format", video_path,
+        ],
+        capture_output=True, check=True, text=True,
+    )
+    return float(json.loads(result.stdout)["format"]["duration"])
 
-    Benefits for long videos:
-      - Whisper only reads the small audio file, not the full video
-      - If both transcribe and translate tasks run, audio is decoded once
-      - More robust across exotic video codecs
+
+def _extract_audio_chunk(video_path: str, start: float, duration: float) -> str:
+    """
+    Extract [start, start+duration] seconds of audio from video to a temp WAV.
+
+    Placing -ss before -i uses FFmpeg's fast keyframe seek so we don't decode
+    the entire video up to `start` — important for chunks deep into long files.
     """
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
     subprocess.run(
         [
-            "ffmpeg", "-y", "-i", video_path,
-            "-vn",                        # drop video stream
-            "-acodec", "pcm_s16le",       # uncompressed PCM — Whisper's native format
-            "-ar", "16000",               # 16 kHz — Whisper's expected sample rate
-            "-ac", "1",                   # mono
+            "ffmpeg", "-y",
+            "-ss", str(start),        # seek before -i for fast seek
+            "-i", video_path,
+            "-t", str(duration),
+            "-vn",
+            "-acodec", "pcm_s16le",
+            "-ar", "16000",
+            "-ac", "1",
             tmp.name,
         ],
         capture_output=True,
@@ -69,31 +88,61 @@ def _extract_audio(video_path: str) -> str:
     return tmp.name
 
 
-def _collect_segments(
-    segments_iter,
-    total_duration: float,
+def _transcribe_chunked(
+    video_path: str,
+    task: str,                                   # "transcribe" or "translate"
+    model_size: str,
     on_progress: Callable[[float], None] | None,
-) -> list[Segment]:
+) -> tuple[list[Segment], str]:
     """
-    Consume the faster-whisper segment generator, optionally reporting progress.
-    faster-whisper is lazy — segments are produced as decoding advances, giving
-    us natural progress checkpoints without any tqdm patching.
+    Transcribe or translate video audio in memory-bounded 10-minute chunks.
+
+    Each chunk is extracted fresh from the video, processed, then deleted.
+    Timestamps are offset so the returned segments have global video times.
     """
-    result = []
-    idx = 1
-    for seg in segments_iter:
-        text = seg.text.strip()
-        if text:
-            result.append({
-                "id":    idx,
-                "start": float(seg.start),
-                "end":   float(seg.end),
-                "text":  text,
-            })
-            idx += 1
-        if on_progress and total_duration > 0:
-            on_progress(min(seg.end / total_duration, 1.0))
-    return result
+    total = _get_duration(video_path)
+    model = _load_model(model_size)
+    beam_size = _BEAM_SIZE.get(model_size, 5)
+
+    all_segments: list[Segment] = []
+    detected_lang = "unknown"
+    seg_id = 1
+    chunk_start = 0.0
+
+    while chunk_start < total:
+        chunk_dur = min(_CHUNK_SECONDS, total - chunk_start)
+        audio_path = _extract_audio_chunk(video_path, chunk_start, chunk_dur)
+        try:
+            segments_iter, info = model.transcribe(
+                audio_path,
+                task=task,
+                beam_size=beam_size,
+                condition_on_previous_text=False,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 500},
+            )
+            if chunk_start == 0:
+                detected_lang = info.language
+
+            for seg in segments_iter:
+                text = seg.text.strip()
+                if text:
+                    all_segments.append({
+                        "id":    seg_id,
+                        "start": float(seg.start) + chunk_start,
+                        "end":   float(seg.end) + chunk_start,
+                        "text":  text,
+                    })
+                    seg_id += 1
+                if on_progress and total > 0:
+                    on_progress(min((chunk_start + float(seg.end)) / total, 1.0))
+        finally:
+            os.unlink(audio_path)
+
+        gc.collect()
+        chunk_start += chunk_dur
+
+    return all_segments, detected_lang
 
 
 def transcribe_video(
@@ -107,21 +156,7 @@ def transcribe_video(
     Returns:
         (segments, detected_language)  — detected_language is an ISO 639-1 code
     """
-    audio_path = _extract_audio(video_path)
-    try:
-        model = _load_model(model_size)
-        segments_iter, info = model.transcribe(
-            audio_path,
-            task="transcribe",
-            beam_size=_BEAM_SIZE.get(model_size, 5),
-            condition_on_previous_text=False,
-            vad_filter=True,        # skip silent sections — faster and fewer empty segments
-            vad_parameters={"min_silence_duration_ms": 500},
-        )
-        segments = _collect_segments(segments_iter, info.duration, on_progress)
-        return segments, info.language
-    finally:
-        os.unlink(audio_path)
+    return _transcribe_chunked(video_path, "transcribe", model_size, on_progress)
 
 
 def transcribe_to_english(
@@ -135,17 +170,5 @@ def transcribe_to_english(
 
     Used as stage 1 of the any-language → Hebrew pipeline.
     """
-    audio_path = _extract_audio(video_path)
-    try:
-        model = _load_model(model_size)
-        segments_iter, info = model.transcribe(
-            audio_path,
-            task="translate",
-            beam_size=_BEAM_SIZE.get(model_size, 5),
-            condition_on_previous_text=False,
-            vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 500},
-        )
-        return _collect_segments(segments_iter, info.duration, on_progress)
-    finally:
-        os.unlink(audio_path)
+    segments, _ = _transcribe_chunked(video_path, "translate", model_size, on_progress)
+    return segments
