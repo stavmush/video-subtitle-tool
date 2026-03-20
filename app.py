@@ -94,6 +94,11 @@ with st.sidebar:
         format_func=lambda x: "English" if x == "en" else "Hebrew (עברית)",
     )
 
+    denoise_audio = st.checkbox(
+        "Reduce background noise",
+        help="Apply noise reduction before transcription. Useful for videos with fan noise, traffic, or other steady background sounds.",
+    )
+
     st.divider()
 
     if st.button("Reset / Start Over", type="secondary", use_container_width=True):
@@ -439,6 +444,7 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
                     video_path=st.session_state["uploaded_video_path"],
                     model_size=whisper_model_size,
                     on_progress=on_transcribe_progress,
+                    denoise=denoise_audio,
                 )
                 progress_bar.progress(1.0)
                 status_text.empty()
@@ -497,6 +503,7 @@ if st.session_state["transcription_done"] and not st.session_state["srt_mode"]:
                         video_path=st.session_state["uploaded_video_path"],
                         model_size=whisper_model_size,
                         on_progress=on_translate_progress,
+                        denoise=denoise_audio,
                     )
                     t_bar.empty()
                     t_status.empty()
@@ -526,6 +533,7 @@ if st.session_state["transcription_done"] and not st.session_state["srt_mode"]:
                         video_path=st.session_state["uploaded_video_path"],
                         model_size=whisper_model_size,
                         on_progress=on_translate_progress,
+                        denoise=denoise_audio,
                     )
                     t_bar.empty()
                     t_status.empty()
