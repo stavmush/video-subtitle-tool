@@ -1,5 +1,5 @@
 """
-Video Subtitle Tool — Streamlit app
+Video Editing Tool — Streamlit app
 
 5-step pipeline:
   1. Upload MP4
@@ -24,7 +24,7 @@ from utils.translate import translate_segments, translate_text_list
 from utils.video import burn_subtitles, embed_subtitles, embed_subtitles_multi
 
 # ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Video Subtitle Tool", layout="wide")
+st.set_page_config(page_title="Video Editing Tool", layout="wide")
 
 # ── Session state defaults ────────────────────────────────────────────────────
 STATE_DEFAULTS: dict = {
@@ -111,7 +111,7 @@ with st.sidebar:
     st.caption("Models are downloaded on first use and cached locally.")
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.title("Video Subtitle Tool")
+st.title("Video Editing Tool")
 st.caption("Transcribe, translate, edit, and export subtitles for your videos.")
 
 # ── Autosave restore banner ───────────────────────────────────────────────────

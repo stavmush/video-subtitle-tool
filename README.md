@@ -1,4 +1,4 @@
-# 🎬 Video Subtitle Tool
+# 🎬 Video Editing Tool
 
 > Local, privacy-first AI subtitle generation — no cloud, no API keys, no data leaving your machine.
 
@@ -20,6 +20,7 @@ Upload a video → transcribe with Whisper → translate → edit subtitles → 
 - **SRT import** — load and edit an existing `.srt` file without re-transcribing
 - **Grammar improvement** — AI-powered cleanup of transcribed text
 - **Export options** — download `.srt` or burn subtitles permanently into the video via FFmpeg
+- **Background noise reduction** — optional spectral gating pre-processing to improve transcription accuracy in noisy recordings
 - **Right-to-left support** — Hebrew subtitles render correctly in both SRT and burned video
 
 ---
@@ -44,15 +45,14 @@ Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add to PATH.
 ### Install & Run
 
 ```bash
-git clone https://github.com/stavmush/video-subtitle-tool.git
-cd video-subtitle-tool
+git clone https://github.com/stavmush/video-editing-tool.git
+cd video-editing-tool
 
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
-pip install -r requirements.txt  # ~1–2 GB, takes a few minutes first time
-
-streamlit run app.py
+make install  # installs all dependencies (~1–2 GB, takes a few minutes first time)
+make          # starts the app
 ```
 
 Open [http://localhost:8501](http://localhost:8501) in your browser.
@@ -64,6 +64,7 @@ Open [http://localhost:8501](http://localhost:8501) in your browser.
 ```
 Video file
     ↓  FFmpeg extracts audio
+    ↓  (optional) Noise reduction via noisereduce
 Whisper model
     ↓  Transcribes speech → raw subtitle segments
 Helsinki-NLP (optional)
@@ -113,13 +114,15 @@ Enter the font path in the app's burn settings before exporting.
 ## 🗂 Project Structure
 
 ```
-video-subtitle-tool/
+video-editing-tool/
 ├── app.py                  # Main Streamlit app
 ├── requirements.txt
+├── Makefile                # run `make` to start, `make install` to set up
 └── utils/
-    ├── transcribe.py       # Whisper transcription
+    ├── transcribe.py       # Whisper transcription + noise reduction
     ├── translate.py        # Helsinki-NLP translation
     ├── improve.py          # Grammar improvement
+    ├── autosave.py         # Auto-save / restore editor state
     ├── srt_utils.py        # SRT parsing / formatting
     └── video.py            # FFmpeg burn-in
 ```
