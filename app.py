@@ -745,12 +745,44 @@ if st.session_state["translation_done"]:
                 new_df["index"] = range(1, len(new_df) + 1)
                 _reset_editor(new_df)
 
+        # ── Row insert / delete controls ──────────────────────────────────────
+        rc_a, rc_b, rc_c = st.columns([1, 1, 1])
+        with rc_a:
+            row_target = st.number_input(
+                "Row #", min_value=1, max_value=max(len(df_saved), 1),
+                value=1, step=1, key="row_target", label_visibility="collapsed",
+            )
+        with rc_b:
+            if st.button("Insert row after", use_container_width=True):
+                idx = int(row_target) - 1  # 0-based
+                prev_end = str(df_saved.iloc[idx]["end"]) if idx < len(df_saved) else "00:00:00,000"
+                new_row = pd.DataFrame([{
+                    "index": int(df_saved.iloc[idx]["index"]) + 1 if idx < len(df_saved) else len(df_saved) + 1,
+                    "start": prev_end,
+                    "end":   prev_end,
+                    "text":  "",
+                }])
+                top = df_saved.iloc[: idx + 1]
+                bottom = df_saved.iloc[idx + 1 :]
+                merged = pd.concat([top, new_row, bottom], ignore_index=True)
+                merged["index"] = range(1, len(merged) + 1)
+                _reset_editor(merged)
+        with rc_c:
+            if st.button("Delete row", use_container_width=True, type="secondary"):
+                idx = int(row_target) - 1
+                if len(df_saved) > 1:
+                    new_df = df_saved.drop(df_saved.index[idx]).reset_index(drop=True)
+                    new_df["index"] = range(1, len(new_df) + 1)
+                    _reset_editor(new_df)
+                else:
+                    st.warning("Cannot delete the last remaining row.")
+
         # Pass the STABLE render base — same object every rerun between button
         # actions — so the React component never reinitializes and scroll is kept.
         edited_df = st.data_editor(
             df_render,
             use_container_width=True,
-            num_rows="dynamic",
+            num_rows="fixed",
             column_config={
                 "index": st.column_config.NumberColumn(
                     "No.",
@@ -778,7 +810,7 @@ if st.session_state["translation_done"]:
             hide_index=True,
             key="subtitle_editor",
         )
-        st.caption("✏️ Click any cell to edit · 🗑️ Hover a row and click the trash icon to delete · ➕ Click the empty row at the bottom to add")
+        st.caption("✏️ Click any cell to edit · use the row controls above to insert or delete rows")
 
         # Compare edited_df (render base + accumulated delta) to df_saved
         # to detect new changes. Save without rerouting — the stable render
