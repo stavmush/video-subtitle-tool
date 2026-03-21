@@ -651,10 +651,12 @@ if st.session_state["translation_done"]:
         # Initialize stable render base from current subtitles on first load
         # or after a button action reset it to None.
         if st.session_state["editor_render_df"] is None:
-            st.session_state["editor_render_df"] = st.session_state["subtitles_df"].copy()
+            base = st.session_state["subtitles_df"].copy()
+            base.insert(0, "_sel", False)
+            st.session_state["editor_render_df"] = base
 
         df_render = st.session_state["editor_render_df"]   # stable base → no scroll reset
-        df_saved  = st.session_state["subtitles_df"]       # latest saved state
+        df_saved  = st.session_state["subtitles_df"]       # latest saved state (no _sel)
 
         # ── Stats bar (computed from latest saved state) ───────────────────────
         try:
@@ -789,6 +791,10 @@ if st.session_state["translation_done"]:
             use_container_width=True,
             num_rows="fixed",
             column_config={
+                "_sel": st.column_config.CheckboxColumn(
+                    "↓", width="small",
+                    help="Check a row to select it for Insert/Delete",
+                ),
                 "index": st.column_config.NumberColumn(
                     "No.",
                     min_value=1,
@@ -815,7 +821,22 @@ if st.session_state["translation_done"]:
             hide_index=True,
             key="subtitle_editor",
         )
-        st.caption("✏️ Click any cell to edit · use the row controls above to insert or delete rows")
+        st.caption("✏️ Click any cell to edit · ↓ check a row to select it for Insert/Delete")
+
+        # Auto-sync row selection from the _sel checkbox column
+        if "_sel" in edited_df.columns:
+            sel = edited_df["_sel"].fillna(False).astype(bool)
+            if sel.any():
+                selected_1based = int(sel.values.tolist().index(True)) + 1
+                st.session_state["row_target"] = selected_1based
+                # Deselect all in the render base so the checkbox clears on next render
+                rd = st.session_state["editor_render_df"].copy()
+                rd["_sel"] = False
+                st.session_state["editor_render_df"] = rd
+                st.rerun()
+
+        # Strip _sel before comparing / saving — df_saved never carries it
+        edited_df = edited_df.drop(columns=["_sel"], errors="ignore")
 
         # Compare edited_df (render base + accumulated delta) to df_saved
         # to detect new changes. Save without rerouting — the stable render
