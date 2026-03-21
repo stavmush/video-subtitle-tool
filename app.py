@@ -43,6 +43,7 @@ STATE_DEFAULTS: dict = {
     "autosave_dismissed": False, # True once user has responded to the restore banner this session
     "editor_render_df": None,    # Stable base passed to st.data_editor; only reset by button actions
     "denoise_reduction_pct": None,  # % of audio energy removed by noise reduction (None if not used)
+    "denoise_band_reductions": None,  # per-band reduction: {bass, speech, treble} -> %
 }
 
 for key, default in STATE_DEFAULTS.items():
@@ -441,7 +442,7 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
                 status_text.caption(f"Transcribing audio... {int(fraction * 100)}%")
 
             try:
-                segments, detected_lang, denoise_pct = transcribe_video(
+                segments, detected_lang, denoise_pct, denoise_bands = transcribe_video(
                     video_path=st.session_state["uploaded_video_path"],
                     model_size=whisper_model_size,
                     on_progress=on_transcribe_progress,
@@ -454,6 +455,7 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
                 st.session_state["source_language"] = detected_lang
                 st.session_state["transcription_done"] = True
                 st.session_state["denoise_reduction_pct"] = denoise_pct
+                st.session_state["denoise_band_reductions"] = denoise_bands
                 st.session_state["subtitles_df"] = segments_to_dataframe(segments)
                 save_session(st.session_state["subtitles_df"], st.session_state.get("loaded_video_name"), st.session_state.get("uploaded_video_path"), target_language)
                 st.rerun()
@@ -473,10 +475,16 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
         st.success(f"Transcription complete. Detected language: **{src}**")
         if st.session_state.get("denoise_reduction_pct") is not None:
             pct = st.session_state["denoise_reduction_pct"]
-            st.caption(
-                f"Noise reduction applied: ~{pct:.0f}% of audio energy removed. "
-                "Higher values mean more background noise was detected and filtered."
-            )
+            bands = st.session_state.get("denoise_band_reductions") or {}
+            st.caption("Noise reduction applied — energy removed per frequency band:")
+            _dc1, _dc2, _dc3, _dc4 = st.columns(4)
+            _dc1.metric("Overall", f"{pct:.0f}%")
+            _dc2.metric("Bass (20–300 Hz)", f"{bands.get('bass', 0):.0f}%",
+                        help="Rumble, traffic, AC hum")
+            _dc3.metric("Speech (300–3kHz)", f"{bands.get('speech', 0):.0f}%",
+                        help="Voice frequencies — low values here are good")
+            _dc4.metric("Treble (3–8 kHz)", f"{bands.get('treble', 0):.0f}%",
+                        help="Fan noise, hiss, electronics")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 3 — Translate  (skipped in SRT mode)
@@ -785,7 +793,12 @@ if st.session_state["translation_done"]:
     srt_for_preview = st.session_state.get("srt_content")
     if video_path_for_preview and srt_for_preview:
         with st.expander("Preview with subtitles"):
-            st.video(video_path_for_preview, subtitles={"Subtitles": srt_for_preview})
+            tmp_dir = st.session_state.get("temp_dir")
+            if tmp_dir:
+                preview_srt_path = os.path.join(tmp_dir, "preview_subtitles.srt")
+                with open(preview_srt_path, "w", encoding="utf-8") as _f:
+                    _f.write(srt_for_preview)
+                st.video(video_path_for_preview, subtitles=preview_srt_path)
 
     col1, col2 = st.columns(2)
 

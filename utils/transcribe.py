@@ -65,17 +65,40 @@ def _get_duration(video_path: str) -> float:
     return float(json.loads(result.stdout)["format"]["duration"])
 
 
-def _denoise_audio(audio_path: str) -> tuple[float, float]:
+_FREQ_BANDS = {
+    "bass":   (20,   300),   # rumble, traffic, AC hum
+    "speech": (300,  3000),  # voice frequencies
+    "treble": (3000, 8000),  # hiss, fan noise, electronics
+}
+
+
+def _band_reductions(data_before: np.ndarray, data_after: np.ndarray, rate: int) -> dict[str, float]:
+    """Return % energy removed per frequency band using FFT magnitude comparison."""
+    freqs = np.fft.rfftfreq(len(data_before), 1.0 / rate)
+    mag_before = np.abs(np.fft.rfft(data_before))
+    mag_after  = np.abs(np.fft.rfft(data_after))
+    result = {}
+    for name, (lo, hi) in _FREQ_BANDS.items():
+        mask = (freqs >= lo) & (freqs < hi)
+        rms_b = float(np.sqrt(np.mean(mag_before[mask] ** 2)))
+        rms_a = float(np.sqrt(np.mean(mag_after[mask] ** 2)))
+        result[name] = (1.0 - rms_a / rms_b) * 100.0 if rms_b > 0 else 0.0
+    return result
+
+
+def _denoise_audio(audio_path: str) -> tuple[float, float, dict[str, float]]:
     """Apply spectral gating noise reduction in-place on a WAV file.
 
-    Returns (rms_before, rms_after) so callers can compute reduction stats.
+    Returns (rms_before, rms_after, band_reductions) where band_reductions is
+    a dict of {band_name: % energy removed} for bass, speech, and treble bands.
     """
     data, rate = sf.read(audio_path)
     rms_before = float(np.sqrt(np.mean(data ** 2)))
     reduced = nr.reduce_noise(y=data, sr=rate, stationary=False)
     rms_after = float(np.sqrt(np.mean(reduced ** 2)))
+    bands = _band_reductions(data, reduced, rate)
     sf.write(audio_path, reduced, rate, subtype="PCM_16")
-    return rms_before, rms_after
+    return rms_before, rms_after, bands
 
 
 def _extract_audio_chunk(video_path: str, start: float, duration: float) -> str:
@@ -131,13 +154,16 @@ def _transcribe_chunked(
     seg_id = 1
     chunk_start = 0.0
     rms_pairs: list[tuple[float, float]] = []
+    band_accum: dict[str, list[float]] = {b: [] for b in _FREQ_BANDS}
 
     while chunk_start < total:
         chunk_dur = min(_CHUNK_SECONDS, total - chunk_start)
         audio_path = _extract_audio_chunk(video_path, chunk_start, chunk_dur)
         if denoise:
-            rms_before, rms_after = _denoise_audio(audio_path)
+            rms_before, rms_after, bands = _denoise_audio(audio_path)
             rms_pairs.append((rms_before, rms_after))
+            for b, v in bands.items():
+                band_accum[b].append(v)
         try:
             segments_iter, info = model.transcribe(
                 audio_path,
@@ -169,13 +195,17 @@ def _transcribe_chunked(
         chunk_start += chunk_dur
 
     reduction_pct: float | None = None
+    band_reductions: dict[str, float] | None = None
     if rms_pairs:
         avg_before = sum(b for b, _ in rms_pairs) / len(rms_pairs)
         avg_after = sum(a for _, a in rms_pairs) / len(rms_pairs)
         if avg_before > 0:
             reduction_pct = (1.0 - avg_after / avg_before) * 100.0
+        band_reductions = {
+            b: sum(vals) / len(vals) for b, vals in band_accum.items() if vals
+        }
 
-    return all_segments, detected_lang, reduction_pct
+    return all_segments, detected_lang, reduction_pct, band_reductions
 
 
 def transcribe_video(
@@ -183,14 +213,13 @@ def transcribe_video(
     model_size: str,
     on_progress: Callable[[float], None] | None = None,
     denoise: bool = False,
-) -> tuple[list[Segment], str, float | None]:
+) -> tuple[list[Segment], str, float | None, dict[str, float] | None]:
     """
     Transcribe video audio in its original language.
 
     Returns:
-        (segments, detected_language, denoise_reduction_pct)
-        detected_language is an ISO 639-1 code.
-        denoise_reduction_pct is None when denoise=False.
+        (segments, detected_language, denoise_reduction_pct, band_reductions)
+        denoise_reduction_pct and band_reductions are None when denoise=False.
     """
     return _transcribe_chunked(video_path, "transcribe", model_size, on_progress, denoise)
 
@@ -207,5 +236,5 @@ def transcribe_to_english(
 
     Used as stage 1 of the any-language → Hebrew pipeline.
     """
-    segments, _, _ = _transcribe_chunked(video_path, "translate", model_size, on_progress, denoise)
+    segments, _, _, _ = _transcribe_chunked(video_path, "translate", model_size, on_progress, denoise)
     return segments
