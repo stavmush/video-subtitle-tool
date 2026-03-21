@@ -746,22 +746,27 @@ if st.session_state["translation_done"]:
                 _reset_editor(new_df)
 
         # ── Row insert / delete controls ──────────────────────────────────────
+        st.caption("Row actions:")
         rc_a, rc_b, rc_c = st.columns([1, 1, 1])
         with rc_a:
             row_target = st.number_input(
-                "Row #", min_value=1, max_value=max(len(df_saved), 1),
-                value=1, step=1, key="row_target", label_visibility="collapsed",
+                "Row number to act on", min_value=1, max_value=max(len(df_saved), 1),
+                value=1, step=1, key="row_target",
+                help="Type the row number you want to insert after or delete",
             )
         with rc_b:
             if st.button("Insert row after", use_container_width=True):
                 idx = int(row_target) - 1  # 0-based
                 prev_end = str(df_saved.iloc[idx]["end"]) if idx < len(df_saved) else "00:00:00,000"
-                new_row = pd.DataFrame([{
-                    "index": int(df_saved.iloc[idx]["index"]) + 1 if idx < len(df_saved) else len(df_saved) + 1,
-                    "start": prev_end,
-                    "end":   prev_end,
-                    "text":  "",
-                }])
+                # Give the new row a 2-second window so start < end is valid
+                from datetime import timedelta
+                new_start = prev_end
+                end_td = _str_to_timedelta(prev_end) + timedelta(seconds=2)
+                h, rem = divmod(int(end_td.total_seconds() * 1000), 3_600_000)
+                m, rem = divmod(rem, 60_000)
+                s, ms  = divmod(rem, 1_000)
+                new_end = f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                new_row = pd.DataFrame([{"index": 0, "start": new_start, "end": new_end, "text": ""}])
                 top = df_saved.iloc[: idx + 1]
                 bottom = df_saved.iloc[idx + 1 :]
                 merged = pd.concat([top, new_row, bottom], ignore_index=True)
