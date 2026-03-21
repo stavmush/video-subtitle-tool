@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 from typing import Any, Callable
 
+import numpy as np
 import noisereduce as nr
 import soundfile as sf
 
@@ -64,11 +65,17 @@ def _get_duration(video_path: str) -> float:
     return float(json.loads(result.stdout)["format"]["duration"])
 
 
-def _denoise_audio(audio_path: str) -> None:
-    """Apply spectral gating noise reduction in-place on a WAV file."""
+def _denoise_audio(audio_path: str) -> tuple[float, float]:
+    """Apply spectral gating noise reduction in-place on a WAV file.
+
+    Returns (rms_before, rms_after) so callers can compute reduction stats.
+    """
     data, rate = sf.read(audio_path)
+    rms_before = float(np.sqrt(np.mean(data ** 2)))
     reduced = nr.reduce_noise(y=data, sr=rate, stationary=False)
+    rms_after = float(np.sqrt(np.mean(reduced ** 2)))
     sf.write(audio_path, reduced, rate, subtype="PCM_16")
+    return rms_before, rms_after
 
 
 def _extract_audio_chunk(video_path: str, start: float, duration: float) -> str:
@@ -104,12 +111,16 @@ def _transcribe_chunked(
     model_size: str,
     on_progress: Callable[[float], None] | None,
     denoise: bool = False,
-) -> tuple[list[Segment], str]:
+) -> tuple[list[Segment], str, float | None]:
     """
     Transcribe or translate video audio in memory-bounded 10-minute chunks.
 
     Each chunk is extracted fresh from the video, processed, then deleted.
     Timestamps are offset so the returned segments have global video times.
+
+    Returns (segments, detected_language, denoise_reduction_pct).
+    denoise_reduction_pct is None when denoise=False, otherwise the average
+    percentage of audio energy removed across all chunks (0–100).
     """
     total = _get_duration(video_path)
     model = _load_model(model_size)
@@ -119,12 +130,14 @@ def _transcribe_chunked(
     detected_lang = "unknown"
     seg_id = 1
     chunk_start = 0.0
+    rms_pairs: list[tuple[float, float]] = []
 
     while chunk_start < total:
         chunk_dur = min(_CHUNK_SECONDS, total - chunk_start)
         audio_path = _extract_audio_chunk(video_path, chunk_start, chunk_dur)
         if denoise:
-            _denoise_audio(audio_path)
+            rms_before, rms_after = _denoise_audio(audio_path)
+            rms_pairs.append((rms_before, rms_after))
         try:
             segments_iter, info = model.transcribe(
                 audio_path,
@@ -155,7 +168,14 @@ def _transcribe_chunked(
         gc.collect()
         chunk_start += chunk_dur
 
-    return all_segments, detected_lang
+    reduction_pct: float | None = None
+    if rms_pairs:
+        avg_before = sum(b for b, _ in rms_pairs) / len(rms_pairs)
+        avg_after = sum(a for _, a in rms_pairs) / len(rms_pairs)
+        if avg_before > 0:
+            reduction_pct = (1.0 - avg_after / avg_before) * 100.0
+
+    return all_segments, detected_lang, reduction_pct
 
 
 def transcribe_video(
@@ -163,12 +183,14 @@ def transcribe_video(
     model_size: str,
     on_progress: Callable[[float], None] | None = None,
     denoise: bool = False,
-) -> tuple[list[Segment], str]:
+) -> tuple[list[Segment], str, float | None]:
     """
     Transcribe video audio in its original language.
 
     Returns:
-        (segments, detected_language)  — detected_language is an ISO 639-1 code
+        (segments, detected_language, denoise_reduction_pct)
+        detected_language is an ISO 639-1 code.
+        denoise_reduction_pct is None when denoise=False.
     """
     return _transcribe_chunked(video_path, "transcribe", model_size, on_progress, denoise)
 
@@ -185,5 +207,5 @@ def transcribe_to_english(
 
     Used as stage 1 of the any-language → Hebrew pipeline.
     """
-    segments, _ = _transcribe_chunked(video_path, "translate", model_size, on_progress, denoise)
+    segments, _, _ = _transcribe_chunked(video_path, "translate", model_size, on_progress, denoise)
     return segments

@@ -42,6 +42,7 @@ STATE_DEFAULTS: dict = {
     "merge_srt_names": [],      # List of filenames from last merge, to detect new uploads
     "autosave_dismissed": False, # True once user has responded to the restore banner this session
     "editor_render_df": None,    # Stable base passed to st.data_editor; only reset by button actions
+    "denoise_reduction_pct": None,  # % of audio energy removed by noise reduction (None if not used)
 }
 
 for key, default in STATE_DEFAULTS.items():
@@ -440,7 +441,7 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
                 status_text.caption(f"Transcribing audio... {int(fraction * 100)}%")
 
             try:
-                segments, detected_lang = transcribe_video(
+                segments, detected_lang, denoise_pct = transcribe_video(
                     video_path=st.session_state["uploaded_video_path"],
                     model_size=whisper_model_size,
                     on_progress=on_transcribe_progress,
@@ -452,6 +453,7 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
                 st.session_state["whisper_segments"] = segments
                 st.session_state["source_language"] = detected_lang
                 st.session_state["transcription_done"] = True
+                st.session_state["denoise_reduction_pct"] = denoise_pct
                 st.session_state["subtitles_df"] = segments_to_dataframe(segments)
                 save_session(st.session_state["subtitles_df"], st.session_state.get("loaded_video_name"), st.session_state.get("uploaded_video_path"), target_language)
                 st.rerun()
@@ -469,6 +471,12 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
     else:
         src = st.session_state["source_language"]
         st.success(f"Transcription complete. Detected language: **{src}**")
+        if st.session_state.get("denoise_reduction_pct") is not None:
+            pct = st.session_state["denoise_reduction_pct"]
+            st.caption(
+                f"Noise reduction applied: ~{pct:.0f}% of audio energy removed. "
+                "Higher values mean more background noise was detected and filtered."
+            )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 3 — Translate  (skipped in SRT mode)
@@ -771,6 +779,13 @@ if st.session_state["translation_done"]:
 # ═══════════════════════════════════════════════════════════════════════════════
 if st.session_state["translation_done"]:
     st.header("5. Export")
+
+    # ── Preview ───────────────────────────────────────────────────────────────
+    video_path_for_preview = st.session_state.get("uploaded_video_path")
+    srt_for_preview = st.session_state.get("srt_content")
+    if video_path_for_preview and srt_for_preview:
+        with st.expander("Preview with subtitles"):
+            st.video(video_path_for_preview, subtitles={"Subtitles": srt_for_preview})
 
     col1, col2 = st.columns(2)
 
