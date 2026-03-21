@@ -42,8 +42,9 @@ STATE_DEFAULTS: dict = {
     "merge_srt_names": [],      # List of filenames from last merge, to detect new uploads
     "autosave_dismissed": False, # True once user has responded to the restore banner this session
     "editor_render_df": None,    # Stable base passed to st.data_editor; only reset by button actions
-    "denoise_reduction_pct": None,    # % of audio energy removed during export (None if not used)
-    "denoise_band_reductions": None,  # per-band reduction shown after export
+    "denoise_reduction_pct": None,    # % of audio energy removed (None if not used)
+    "denoise_band_reductions": None,  # per-band reduction {bass, speech, treble}
+    "denoised_video_path": None,      # path to denoised video created after transcription
 }
 
 for key, default in STATE_DEFAULTS.items():
@@ -94,6 +95,12 @@ with st.sidebar:
         "Subtitle language",
         ["en", "he"],
         format_func=lambda x: "English" if x == "en" else "Hebrew (עברית)",
+    )
+
+    denoise_audio = st.checkbox(
+        "Reduce background noise",
+        help="Transcribes using the original audio (best accuracy), then denoises the audio track. "
+             "The preview and exported video will have clean audio.",
     )
 
     st.divider()
@@ -449,6 +456,21 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
                 st.session_state["source_language"] = detected_lang
                 st.session_state["transcription_done"] = True
                 st.session_state["subtitles_df"] = segments_to_dataframe(segments)
+                if denoise_audio:
+                    status_text.info("Transcription complete. Reducing background noise...")
+                    tmp_dir = st.session_state["temp_dir"]
+                    denoised_wav = os.path.join(tmp_dir, "denoised_audio.wav")
+                    d_pct, d_bands = denoise_audio_track(
+                        st.session_state["uploaded_video_path"], denoised_wav
+                    )
+                    denoised_video = os.path.join(tmp_dir, "video_denoised.mp4")
+                    replace_audio_track(
+                        st.session_state["uploaded_video_path"], denoised_wav, denoised_video
+                    )
+                    st.session_state["denoised_video_path"] = denoised_video
+                    st.session_state["denoise_reduction_pct"] = d_pct
+                    st.session_state["denoise_band_reductions"] = d_bands
+                status_text.empty()
                 save_session(st.session_state["subtitles_df"], st.session_state.get("loaded_video_name"), st.session_state.get("uploaded_video_path"), target_language)
                 st.rerun()
             except MemoryError:
@@ -466,10 +488,21 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
         src = st.session_state["source_language"]
         _t2_col1, _t2_col2 = st.columns([4, 1])
         _t2_col1.success(f"Transcription complete. Detected language: **{src}**")
+        if st.session_state.get("denoise_reduction_pct") is not None:
+            pct = st.session_state["denoise_reduction_pct"]
+            bands = st.session_state.get("denoise_band_reductions") or {}
+            st.caption("Noise reduction applied — energy removed per frequency band:")
+            _dc1, _dc2, _dc3, _dc4 = st.columns(4)
+            _dc1.metric("Overall", f"{pct:.0f}%")
+            _dc2.metric("Bass (20–300 Hz)", f"{bands.get('bass', 0):.0f}%", help="Rumble, traffic, AC hum")
+            _dc3.metric("Speech (300–3kHz)", f"{bands.get('speech', 0):.0f}%", help="Voice frequencies — low values here are good")
+            _dc4.metric("Treble (3–8 kHz)", f"{bands.get('treble', 0):.0f}%", help="Fan noise, hiss, electronics")
+
         if _t2_col2.button("Re-run", key="retranscribe", help="Re-transcribe with current settings"):
             for _k in [
                 "transcription_done", "translation_done", "whisper_segments",
                 "source_language", "subtitles_df", "srt_content", "editor_render_df",
+                "denoised_video_path", "denoise_reduction_pct", "denoise_band_reductions",
             ]:
                 st.session_state[_k] = STATE_DEFAULTS[_k]
             _clear_editor_state()
@@ -781,24 +814,17 @@ if st.session_state["translation_done"]:
 if st.session_state["translation_done"]:
     st.header("5. Export")
 
-    # ── Noise reduction option (applied at export time) ───────────────────────
-    denoise_export = st.checkbox(
-        "Reduce background noise in exported video",
-        help="Applies spectral noise reduction to the audio track of the exported video. "
-             "Transcription always uses the original audio for best accuracy.",
-    )
-
     # ── Preview ───────────────────────────────────────────────────────────────
-    video_path_for_preview = st.session_state.get("uploaded_video_path")
+    _preview_video = st.session_state.get("denoised_video_path") or st.session_state.get("uploaded_video_path")
     srt_for_preview = st.session_state.get("srt_content")
-    if video_path_for_preview and srt_for_preview:
+    if _preview_video and srt_for_preview:
         with st.expander("Preview with subtitles"):
             tmp_dir = st.session_state.get("temp_dir")
             if tmp_dir:
                 preview_srt_path = os.path.join(tmp_dir, "preview_subtitles.srt")
                 with open(preview_srt_path, "w", encoding="utf-8") as _f:
                     _f.write(srt_for_preview)
-                st.video(video_path_for_preview, subtitles=preview_srt_path)
+                st.video(_preview_video, subtitles=preview_srt_path)
 
     col1, col2 = st.columns(2)
 
@@ -899,16 +925,10 @@ if st.session_state["translation_done"]:
                         f.write(srt_to_embed)
 
                     try:
-                        input_video = st.session_state["uploaded_video_path"]
-                        if denoise_export:
-                            with st.spinner("Reducing background noise in audio..."):
-                                denoised_wav = os.path.join(tmp_dir, "denoised_audio.wav")
-                                d_pct, d_bands = denoise_audio_track(input_video, denoised_wav)
-                                denoised_video = os.path.join(tmp_dir, "video_denoised.mp4")
-                                replace_audio_track(input_video, denoised_wav, denoised_video)
-                                input_video = denoised_video
-                                st.session_state["denoise_reduction_pct"] = d_pct
-                                st.session_state["denoise_band_reductions"] = d_bands
+                        input_video = (
+                            st.session_state.get("denoised_video_path")
+                            or st.session_state["uploaded_video_path"]
+                        )
 
                         with st.spinner("Embedding subtitles with FFmpeg..."):
                             if add_second_track and second_srt_content:
@@ -928,15 +948,6 @@ if st.session_state["translation_done"]:
                                 )
 
                         st.success("Done! Click below to download.")
-                        if denoise_export and st.session_state.get("denoise_reduction_pct") is not None:
-                            pct = st.session_state["denoise_reduction_pct"]
-                            bands = st.session_state.get("denoise_band_reductions") or {}
-                            st.caption("Noise reduction applied — energy removed per frequency band:")
-                            _dc1, _dc2, _dc3, _dc4 = st.columns(4)
-                            _dc1.metric("Overall", f"{pct:.0f}%")
-                            _dc2.metric("Bass (20–300 Hz)", f"{bands.get('bass', 0):.0f}%", help="Rumble, traffic, AC hum")
-                            _dc3.metric("Speech (300–3kHz)", f"{bands.get('speech', 0):.0f}%", help="Voice frequencies — low values here are good")
-                            _dc4.metric("Treble (3–8 kHz)", f"{bands.get('treble', 0):.0f}%", help="Fan noise, hiss, electronics")
                         with open(output_path, "rb") as vf:
                             video_bytes = vf.read()
                         st.download_button(
@@ -987,16 +998,10 @@ if st.session_state["translation_done"]:
                         f.write(st.session_state["srt_content"])
 
                     try:
-                        input_video = st.session_state["uploaded_video_path"]
-                        if denoise_export:
-                            with st.spinner("Reducing background noise in audio..."):
-                                denoised_wav = os.path.join(tmp_dir, "denoised_audio.wav")
-                                d_pct, d_bands = denoise_audio_track(input_video, denoised_wav)
-                                denoised_video = os.path.join(tmp_dir, "video_denoised.mp4")
-                                replace_audio_track(input_video, denoised_wav, denoised_video)
-                                input_video = denoised_video
-                                st.session_state["denoise_reduction_pct"] = d_pct
-                                st.session_state["denoise_band_reductions"] = d_bands
+                        input_video = (
+                            st.session_state.get("denoised_video_path")
+                            or st.session_state["uploaded_video_path"]
+                        )
 
                         with st.spinner("Burning subtitles with FFmpeg..."):
                             burn_subtitles(
@@ -1009,15 +1014,6 @@ if st.session_state["translation_done"]:
                             )
 
                         st.success("Done! Click below to download.")
-                        if denoise_export and st.session_state.get("denoise_reduction_pct") is not None:
-                            pct = st.session_state["denoise_reduction_pct"]
-                            bands = st.session_state.get("denoise_band_reductions") or {}
-                            st.caption("Noise reduction applied — energy removed per frequency band:")
-                            _bc1, _bc2, _bc3, _bc4 = st.columns(4)
-                            _bc1.metric("Overall", f"{pct:.0f}%")
-                            _bc2.metric("Bass (20–300 Hz)", f"{bands.get('bass', 0):.0f}%", help="Rumble, traffic, AC hum")
-                            _bc3.metric("Speech (300–3kHz)", f"{bands.get('speech', 0):.0f}%", help="Voice frequencies — low values here are good")
-                            _bc4.metric("Treble (3–8 kHz)", f"{bands.get('treble', 0):.0f}%", help="Fan noise, hiss, electronics")
                         with open(output_path, "rb") as vf:
                             video_bytes = vf.read()
                         st.download_button(
