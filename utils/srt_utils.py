@@ -73,7 +73,8 @@ def dataframe_to_srt(df: pd.DataFrame) -> str:
         UTF-8 string in SRT format ready to write to a .srt file
     """
     subtitles = []
-    df = df.reset_index(drop=True)
+    df = df.dropna(subset=["start", "end"]).reset_index(drop=True)
+    df = df[df["start"].astype(str).str.strip().ne("") & df["end"].astype(str).str.strip().ne("")]
     for _, row in df.iterrows():
         start = _str_to_timedelta(str(row["start"]))
         end   = _str_to_timedelta(str(row["end"]))
