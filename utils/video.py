@@ -18,6 +18,23 @@ import shutil
 import subprocess
 
 
+def replace_audio_track(input_video: str, audio_wav: str, output_path: str) -> None:
+    """Replace a video's audio track with the given WAV, re-encoding to AAC."""
+    result = subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", input_video,
+            "-i", audio_wav,
+            "-map", "0:v", "-map", "1:a",
+            "-c:v", "copy", "-c:a", "aac",
+            output_path,
+        ],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"FFmpeg failed:\n{result.stderr.decode('utf-8', errors='replace')}")
+
+
 def _has_libass() -> bool:
     """Return True if the system ffmpeg was compiled with libass."""
     try:

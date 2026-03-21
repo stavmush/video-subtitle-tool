@@ -133,17 +133,12 @@ def _transcribe_chunked(
     task: str,                                   # "transcribe" or "translate"
     model_size: str,
     on_progress: Callable[[float], None] | None,
-    denoise: bool = False,
-) -> tuple[list[Segment], str, float | None]:
+) -> tuple[list[Segment], str]:
     """
     Transcribe or translate video audio in memory-bounded 10-minute chunks.
 
     Each chunk is extracted fresh from the video, processed, then deleted.
     Timestamps are offset so the returned segments have global video times.
-
-    Returns (segments, detected_language, denoise_reduction_pct).
-    denoise_reduction_pct is None when denoise=False, otherwise the average
-    percentage of audio energy removed across all chunks (0–100).
     """
     total = _get_duration(video_path)
     model = _load_model(model_size)
@@ -153,17 +148,10 @@ def _transcribe_chunked(
     detected_lang = "unknown"
     seg_id = 1
     chunk_start = 0.0
-    rms_pairs: list[tuple[float, float]] = []
-    band_accum: dict[str, list[float]] = {b: [] for b in _FREQ_BANDS}
 
     while chunk_start < total:
         chunk_dur = min(_CHUNK_SECONDS, total - chunk_start)
         audio_path = _extract_audio_chunk(video_path, chunk_start, chunk_dur)
-        if denoise:
-            rms_before, rms_after, bands = _denoise_audio(audio_path)
-            rms_pairs.append((rms_before, rms_after))
-            for b, v in bands.items():
-                band_accum[b].append(v)
         try:
             segments_iter, info = model.transcribe(
                 audio_path,
@@ -194,47 +182,66 @@ def _transcribe_chunked(
         gc.collect()
         chunk_start += chunk_dur
 
-    reduction_pct: float | None = None
-    band_reductions: dict[str, float] | None = None
-    if rms_pairs:
-        avg_before = sum(b for b, _ in rms_pairs) / len(rms_pairs)
-        avg_after = sum(a for _, a in rms_pairs) / len(rms_pairs)
-        if avg_before > 0:
-            reduction_pct = (1.0 - avg_after / avg_before) * 100.0
-        band_reductions = {
-            b: sum(vals) / len(vals) for b, vals in band_accum.items() if vals
-        }
-
-    return all_segments, detected_lang, reduction_pct, band_reductions
+    return all_segments, detected_lang
 
 
 def transcribe_video(
     video_path: str,
     model_size: str,
     on_progress: Callable[[float], None] | None = None,
-    denoise: bool = False,
-) -> tuple[list[Segment], str, float | None, dict[str, float] | None]:
-    """
-    Transcribe video audio in its original language.
+) -> tuple[list[Segment], str]:
+    """Transcribe video audio in its original language.
 
-    Returns:
-        (segments, detected_language, denoise_reduction_pct, band_reductions)
-        denoise_reduction_pct and band_reductions are None when denoise=False.
+    Returns (segments, detected_language) — detected_language is an ISO 639-1 code.
     """
-    return _transcribe_chunked(video_path, "transcribe", model_size, on_progress, denoise)
+    return _transcribe_chunked(video_path, "transcribe", model_size, on_progress)
 
 
 def transcribe_to_english(
     video_path: str,
     model_size: str,
     on_progress: Callable[[float], None] | None = None,
-    denoise: bool = False,
 ) -> list[Segment]:
-    """
-    Use Whisper's built-in translate task to produce English-language segments
-    from a video in any source language.
+    """Use Whisper's built-in translate task to produce English-language segments.
 
     Used as stage 1 of the any-language → Hebrew pipeline.
     """
-    segments, _, _, _ = _transcribe_chunked(video_path, "translate", model_size, on_progress, denoise)
+    segments, _ = _transcribe_chunked(video_path, "translate", model_size, on_progress)
     return segments
+
+
+def denoise_audio_track(
+    video_path: str,
+    output_wav_path: str,
+) -> tuple[float, dict[str, float]]:
+    """Extract audio from a video, apply spectral gating noise reduction, save as WAV.
+
+    Processes the full audio at its original sample rate so the exported video
+    retains its original audio quality. Noise reduction is applied after
+    transcription so Whisper always reads the original, unmodified audio.
+
+    Returns (overall_reduction_pct, band_reductions).
+    """
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp.close()
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le", tmp.name],
+            capture_output=True, check=True,
+        )
+        data, rate = sf.read(tmp.name)
+        # noisereduce expects (channels, samples) for multichannel; soundfile gives (samples, channels)
+        audio_in = data.T if data.ndim > 1 else data
+        rms_before = float(np.sqrt(np.mean(data ** 2)))
+        reduced_t = nr.reduce_noise(y=audio_in, sr=rate, stationary=False)
+        reduced = reduced_t.T if reduced_t.ndim > 1 else reduced_t
+        rms_after = float(np.sqrt(np.mean(reduced ** 2)))
+        # Use first channel for band analysis
+        ch_before = data[:, 0] if data.ndim > 1 else data
+        ch_after  = reduced[:, 0] if reduced.ndim > 1 else reduced
+        bands = _band_reductions(ch_before, ch_after, rate)
+        sf.write(output_wav_path, reduced, rate, subtype="PCM_16")
+        overall_pct = (1.0 - rms_after / rms_before) * 100.0 if rms_before > 0 else 0.0
+        return overall_pct, bands
+    finally:
+        os.unlink(tmp.name)
