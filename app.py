@@ -472,7 +472,17 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
                 st.error(f"Transcription failed: {e}")
     else:
         src = st.session_state["source_language"]
-        st.success(f"Transcription complete. Detected language: **{src}**")
+        _t2_col1, _t2_col2 = st.columns([4, 1])
+        _t2_col1.success(f"Transcription complete. Detected language: **{src}**")
+        if _t2_col2.button("Re-run", key="retranscribe", help="Re-transcribe with current settings"):
+            for _k in [
+                "transcription_done", "translation_done", "whisper_segments",
+                "source_language", "subtitles_df", "srt_content", "editor_render_df",
+                "denoise_reduction_pct", "denoise_band_reductions",
+            ]:
+                st.session_state[_k] = STATE_DEFAULTS[_k]
+            _clear_editor_state()
+            st.rerun()
         if st.session_state.get("denoise_reduction_pct") is not None:
             pct = st.session_state["denoise_reduction_pct"]
             bands = st.session_state.get("denoise_band_reductions") or {}
@@ -574,7 +584,13 @@ if st.session_state["transcription_done"] and not st.session_state["srt_mode"]:
 
     else:
         lang_label = "Hebrew (עברית)" if tgt == "he" else "English"
-        st.success(f"Translation to {lang_label} complete.")
+        _t3_col1, _t3_col2 = st.columns([4, 1])
+        _t3_col1.success(f"Translation to {lang_label} complete.")
+        if _t3_col2.button("Re-run", key="retranslate", help="Re-translate with current settings"):
+            for _k in ["translation_done", "subtitles_df", "srt_content", "editor_render_df"]:
+                st.session_state[_k] = STATE_DEFAULTS[_k]
+            _clear_editor_state()
+            st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 4 — Edit Subtitles
