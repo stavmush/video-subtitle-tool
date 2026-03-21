@@ -778,6 +778,7 @@ if st.session_state["translation_done"]:
             hide_index=True,
             key="subtitle_editor",
         )
+        st.caption("✏️ Click any cell to edit · 🗑️ Hover a row and click the trash icon to delete · ➕ Click the empty row at the bottom to add")
 
         # Compare edited_df (render base + accumulated delta) to df_saved
         # to detect new changes. Save without rerouting — the stable render
