@@ -21,6 +21,9 @@ import subprocess
 import tempfile
 from typing import Any, Callable
 
+import noisereduce as nr
+import soundfile as sf
+
 import streamlit as st
 from faster_whisper import WhisperModel
 
@@ -61,6 +64,13 @@ def _get_duration(video_path: str) -> float:
     return float(json.loads(result.stdout)["format"]["duration"])
 
 
+def _denoise_audio(audio_path: str) -> None:
+    """Apply spectral gating noise reduction in-place on a WAV file."""
+    data, rate = sf.read(audio_path)
+    reduced = nr.reduce_noise(y=data, sr=rate, stationary=False)
+    sf.write(audio_path, reduced, rate, subtype="PCM_16")
+
+
 def _extract_audio_chunk(video_path: str, start: float, duration: float) -> str:
     """
     Extract [start, start+duration] seconds of audio from video to a temp WAV.
@@ -93,6 +103,7 @@ def _transcribe_chunked(
     task: str,                                   # "transcribe" or "translate"
     model_size: str,
     on_progress: Callable[[float], None] | None,
+    denoise: bool = False,
 ) -> tuple[list[Segment], str]:
     """
     Transcribe or translate video audio in memory-bounded 10-minute chunks.
@@ -112,6 +123,8 @@ def _transcribe_chunked(
     while chunk_start < total:
         chunk_dur = min(_CHUNK_SECONDS, total - chunk_start)
         audio_path = _extract_audio_chunk(video_path, chunk_start, chunk_dur)
+        if denoise:
+            _denoise_audio(audio_path)
         try:
             segments_iter, info = model.transcribe(
                 audio_path,
@@ -149,6 +162,7 @@ def transcribe_video(
     video_path: str,
     model_size: str,
     on_progress: Callable[[float], None] | None = None,
+    denoise: bool = False,
 ) -> tuple[list[Segment], str]:
     """
     Transcribe video audio in its original language.
@@ -156,13 +170,14 @@ def transcribe_video(
     Returns:
         (segments, detected_language)  — detected_language is an ISO 639-1 code
     """
-    return _transcribe_chunked(video_path, "transcribe", model_size, on_progress)
+    return _transcribe_chunked(video_path, "transcribe", model_size, on_progress, denoise)
 
 
 def transcribe_to_english(
     video_path: str,
     model_size: str,
     on_progress: Callable[[float], None] | None = None,
+    denoise: bool = False,
 ) -> list[Segment]:
     """
     Use Whisper's built-in translate task to produce English-language segments
@@ -170,5 +185,5 @@ def transcribe_to_english(
 
     Used as stage 1 of the any-language → Hebrew pipeline.
     """
-    segments, _ = _transcribe_chunked(video_path, "translate", model_size, on_progress)
+    segments, _ = _transcribe_chunked(video_path, "translate", model_size, on_progress, denoise)
     return segments

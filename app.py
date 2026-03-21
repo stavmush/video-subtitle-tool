@@ -1,5 +1,5 @@
 """
-Video Subtitle Tool — Streamlit app
+Video Editing Tool — Streamlit app
 
 5-step pipeline:
   1. Upload MP4
@@ -24,7 +24,7 @@ from utils.translate import translate_segments, translate_text_list
 from utils.video import burn_subtitles, embed_subtitles, embed_subtitles_multi
 
 # ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Video Subtitle Tool", layout="wide")
+st.set_page_config(page_title="Video Editing Tool", layout="wide")
 
 # ── Session state defaults ────────────────────────────────────────────────────
 STATE_DEFAULTS: dict = {
@@ -94,6 +94,11 @@ with st.sidebar:
         format_func=lambda x: "English" if x == "en" else "Hebrew (עברית)",
     )
 
+    denoise_audio = st.checkbox(
+        "Reduce background noise",
+        help="Apply noise reduction before transcription. Useful for videos with fan noise, traffic, or other steady background sounds.",
+    )
+
     st.divider()
 
     if st.button("Reset / Start Over", type="secondary", use_container_width=True):
@@ -106,7 +111,7 @@ with st.sidebar:
     st.caption("Models are downloaded on first use and cached locally.")
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.title("Video Subtitle Tool")
+st.title("Video Editing Tool")
 st.caption("Transcribe, translate, edit, and export subtitles for your videos.")
 
 # ── Autosave restore banner ───────────────────────────────────────────────────
@@ -439,6 +444,7 @@ if st.session_state["uploaded_video_path"] and not st.session_state["srt_mode"]:
                     video_path=st.session_state["uploaded_video_path"],
                     model_size=whisper_model_size,
                     on_progress=on_transcribe_progress,
+                    denoise=denoise_audio,
                 )
                 progress_bar.progress(1.0)
                 status_text.empty()
@@ -497,6 +503,7 @@ if st.session_state["transcription_done"] and not st.session_state["srt_mode"]:
                         video_path=st.session_state["uploaded_video_path"],
                         model_size=whisper_model_size,
                         on_progress=on_translate_progress,
+                        denoise=denoise_audio,
                     )
                     t_bar.empty()
                     t_status.empty()
@@ -526,6 +533,7 @@ if st.session_state["transcription_done"] and not st.session_state["srt_mode"]:
                         video_path=st.session_state["uploaded_video_path"],
                         model_size=whisper_model_size,
                         on_progress=on_translate_progress,
+                        denoise=denoise_audio,
                     )
                     t_bar.empty()
                     t_status.empty()

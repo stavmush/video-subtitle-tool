@@ -7,3 +7,5 @@ sacremoses>=0.1.1
 ffmpeg-python>=0.2.0
 srt>=3.5.3
 pandas>=2.0.0
+noisereduce>=3.0.0
+soundfile>=0.12.0
